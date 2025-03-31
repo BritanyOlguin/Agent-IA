@@ -1,0 +1,14 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+.env
+.DS_Store
+*.sqlite3
+*.lock
+.locks/
+models/
+llama_index_banco_bancomer_e5_large/
+banco_bancomer.xlsx
