@@ -1,0 +1,13 @@
+venv/
+models/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+llama_index_banco_bancomer_e5_large/
+*.onnx
+*.pt
+*.bin
+*.sqlite3
+*.log
+banco_bancomer.xlsx
