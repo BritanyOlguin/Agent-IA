@@ -11,9 +11,9 @@ from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter
 from llama_index.core.retrievers import VectorIndexRetriever
 
 # --- 1) CONFIGURACIÓN ---
-ruta_modelo_embeddings = r"C:\Users\Sistemas\Documents\OKIP\src\models--intfloat--e5-large-v2"
+ruta_modelo_embeddings = r"C:\Users\Sistemas\Documents\OKIP\models\models--intfloat--e5-large-v2"
 ruta_indice = r"C:\Users\Sistemas\Documents\OKIP\llama_index_banco_bancomer_e5_large"
-ruta_modelo_llama3 = r"C:\Users\Sistemas\Documents\OKIP\src\models--meta-llama--Meta-Llama-3-8B-Instruct"
+ruta_modelo_llama3 = r"C:\Users\Sistemas\Documents\OKIP\models\models--meta-llama--Meta-Llama-3-8B-Instruct"
 NOMBRE_FUENTE = "banco_bancomer" # Nombre usado al indexar
 
 # Configuración de Dispositivo y LLM

@@ -10,7 +10,7 @@ from llama_index.core.settings import Settings
 import gc
 
 # --- 1) CONFIGURACIÓN ---
-ruta_modelo_embeddings = r"C:\Users\Sistemas\Documents\OKIP\src\models--intfloat--e5-large-v2"
+ruta_modelo_embeddings = r"C:\Users\Sistemas\Documents\OKIP\models\models--intfloat--e5-large-v2"
 
 ruta_datos_excel = r"C:\Users\Sistemas\Documents\OKIP\banco_bancomer.xlsx"
 ruta_llama_index = r"C:\Users\Sistemas\Documents\OKIP\llama_index_banco_bancomer_e5_large"

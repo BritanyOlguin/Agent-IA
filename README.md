@@ -72,7 +72,7 @@ pip install transformers sentence-transformers huggingface-hub
 13. Correr este comando, tienes que estar loggeado en hugginface
 ```sh
 huggingface-cli login
-huggingface-cli download intfloat/e5-large-v2 --local-dir "src/models--intfloat--e5-large-v2" --local-dir-use-symlinks False
+huggingface-cli download intfloat/e5-large-v2 --local-dir "models/models--intfloat--e5-large-v2" --local-dir-use-symlinks False
 ```
 
 ARCHIVO LLAMA_BD
