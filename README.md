@@ -16,6 +16,9 @@ py -m venv venv
 3. Instalar las dependencias
 ```sh
 pip install -r requirements.txt
+pip install pyodbc
+pip install dbfread
+
 ```
 3.1 Si sale este error utiliza...
 

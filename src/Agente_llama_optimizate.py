@@ -120,6 +120,7 @@ def obtener_info_por_nombre(nombre_completo: str) -> str:
     """
     Busca toda la información asociada a una persona dado su nombre completo,
     intentando diferentes campos de nombre en todos los índices disponibles.
+    También maneja el caso de nombres separados en campos PATERNO, MATERNO y NOMBRE.
     """
     print(f"⚙️ Ejecutando herramienta: obtener_info_por_nombre con nombre='{nombre_completo}'")
     resultados = []
@@ -148,31 +149,46 @@ def obtener_info_por_nombre(nombre_completo: str) -> str:
                 encontrado = True
                 metadata = nodes[0].node.metadata
                 info = [f"{k}: {v}" for k, v in metadata.items() 
-                       if k not in ['fuente', 'archivo', 'fila_excel'] and v]
+                       if k not in ['fuente', 'archivo', 'fila_excel', 'fila_origen'] and v]
                 resultados.append(f"Información encontrada en {fuente} para {nombre_completo}:\n" + "\n".join(info))
         
-        # Si no encontramos con ningún campo, intentar una búsqueda más flexible
+        # Buscar nombre en formato separado (PATERNO, MATERNO, NOMBRE)
         if not encontrado:
-            # Búsqueda vectorial sin filtros exactos
-            retriever = VectorIndexRetriever(index=index, similarity_top_k=3)
+            # Intentar formar un nombre completo a partir de los componentes
+            retriever = VectorIndexRetriever(index=index, similarity_top_k=10)
             nodes = retriever.retrieve(nombre_completo)
             
             for node in nodes:
-                # Verificar si alguna parte del nombre coincide
                 metadata = node.node.metadata
-                nombre_en_metadata = ""
                 
-                # Obtener el nombre del metadata, cualquiera que sea el campo
-                for campo in campos_nombre:
-                    if campo in metadata:
-                        nombre_en_metadata = metadata[campo]
-                        break
+                # Verificar si tenemos los campos separados
+                paterno = metadata.get("PATERNO", "")
+                materno = metadata.get("MATERNO", "")
+                primer_nombre = metadata.get("NOMBRE", "")
                 
-                # Verificar coincidencia parcial (todas las palabras del nombre buscado están en el nombre encontrado)
-                palabras_buscadas = [p.upper() for p in nombre_completo.split() if len(p) > 2]
-                if nombre_en_metadata and all(p in nombre_en_metadata.upper() for p in palabras_buscadas):
+                # Intentar formar nombre completo de diferentes maneras
+                posibles_nombres = []
+                if paterno and materno and primer_nombre:
+                    posibles_nombres.append(f"{paterno} {materno} {primer_nombre}")
+                    posibles_nombres.append(f"{primer_nombre} {paterno} {materno}")
+                
+                # Verificar si alguna versión coincide con el nombre buscado
+                if any(nombre.upper().strip() == nombre_completo.upper().strip() for nombre in posibles_nombres):
+                    encontrado = True
                     info = [f"{k}: {v}" for k, v in metadata.items() 
-                           if k not in ['fuente', 'archivo', 'fila_excel'] and v]
+                           if k not in ['fuente', 'archivo', 'fila_excel', 'fila_origen'] and v]
+                    resultados.append(f"Información encontrada en {fuente} para {nombre_completo}:\n" + "\n".join(info))
+                    break
+                
+                # Si no hay coincidencia exacta, buscar coincidencia parcial
+                palabras_buscadas = [p.upper() for p in nombre_completo.split() if len(p) > 2]
+                
+                # Combinar todos los campos de nombre para buscar coincidencia parcial
+                nombre_compuesto = f"{paterno} {materno} {primer_nombre}".upper()
+                
+                if nombre_compuesto and all(p in nombre_compuesto for p in palabras_buscadas):
+                    info = [f"{k}: {v}" for k, v in metadata.items() 
+                           if k not in ['fuente', 'archivo', 'fila_excel', 'fila_origen'] and v]
                     resultados.append(f"Posible coincidencia en {fuente} para {nombre_completo}:\n" + "\n".join(info))
                     break  # Solo mostrar la primera coincidencia parcial
 
@@ -181,16 +197,40 @@ def obtener_info_por_nombre(nombre_completo: str) -> str:
     else:
         return f"No se encontró información para la persona con nombre: {nombre_completo}"
 
-info_nombre_tool = FunctionTool.from_defaults(
-    fn=obtener_info_por_nombre,
-    name="obtener_info_por_nombre_completo",
+# 2. Agregar una nueva herramienta para buscar por nombre separado
+
+def buscar_por_nombre_compuesto(paterno: str, materno: str, nombre: str) -> str:
+    """
+    Busca una persona usando sus apellidos y nombre separados.
+    """
+    print(f"⚙️ Ejecutando herramienta: buscar_por_nombre_compuesto con P:{paterno}, M:{materno}, N:{nombre}")
+    
+    # Formar diferentes variantes del nombre completo
+    nombre_completo_1 = f"{paterno} {materno} {nombre}".strip()
+    nombre_completo_2 = f"{nombre} {paterno} {materno}".strip()
+    
+    # Buscar con la primera variante
+    resultado_1 = obtener_info_por_nombre(nombre_completo_1)
+    
+    # Si no se encontró con la primera variante, intentar con la segunda
+    if "No se encontró información" in resultado_1:
+        resultado_2 = obtener_info_por_nombre(nombre_completo_2)
+        if "No se encontró información" not in resultado_2:
+            return resultado_2
+    
+    return resultado_1
+
+nombre_compuesto_tool = FunctionTool.from_defaults(
+    fn=buscar_por_nombre_compuesto,
+    name="buscar_por_nombre_compuesto",
     description=(
-        "Utiliza esta herramienta EXCLUSIVAMENTE cuando necesites obtener TODA la información "
-        "disponible de una persona y tengas su NOMBRE COMPLETO exacto. "
-        "Por ejemplo: 'Dame la información de Juan Perez Garcia' o 'Datos de Maria Lopez Aguilar'."
+        "Utiliza esta herramienta cuando tengas los componentes separados del nombre "
+        "(apellido paterno, apellido materno y nombre). "
+        "Por ejemplo: 'Busca información de la persona con apellido paterno Acevedo, "
+        "apellido materno Perez y nombre Guadalupe'."
     )
 )
-all_tools.append(info_nombre_tool)
+all_tools.append(nombre_compuesto_tool)
 
 # Herramienta 3: Buscar personas por atributo específico (Campo y Valor)
 def buscar_personas_por_atributo(campo: str, valor: str) -> str:
@@ -211,6 +251,18 @@ def buscar_personas_por_atributo(campo: str, valor: str) -> str:
         "colonia": "Colonia", "COLONIA": "Colonia",
         "sector": "Sector", "SECTOR": "Sector",
         "municipio": "Municipio", "MUNICIPIO": "Municipio",
+        "clave ife": "CLAVE IFE", "ife": "CLAVE IFE",
+        "paterno": "PATERNO", "apellido paterno": "PATERNO",
+        "materno": "MATERNO", "apellido materno": "MATERNO",
+        "edo de origen": "EDO DE ORIGEN", "estado de origen": "EDO DE ORIGEN",
+        "sexo": "SEXO", "género": "SEXO",
+        "ocupacion": "OCUPACION", "ocupación": "OCUPACION",
+        "domicilio: calle": "DOMICILIO: CALLE", "calle": "DOMICILIO: CALLE",
+        "número": "NÚMERO", "num": "NÚMERO", "numero": "NÚMERO",
+        "código postal": "CODIGO POSTAL", "codigo postal": "CODIGO POSTAL", "cp": "CODIGO POSTAL",
+        "fecha afiliacion": "FECHA_AFILIACION", "fecha_afiliacion": "FECHA_AFILIACION", 
+        "fecha de afiliacion": "FECHA_AFILIACION", "fecha de afiliación": "FECHA_AFILIACION",
+        "entidad": "ENTIDAD", "estado": "ENTIDAD", "entidad federativa": "ENTIDAD",
         # Añade más mapeos si es necesario
     }
     campo_normalizado = campo_map.get(campo.lower(), campo.capitalize())  # Intentar normalizar

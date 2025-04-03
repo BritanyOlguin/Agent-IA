@@ -51,6 +51,86 @@ def cargar_dataframe(archivo):
             table = DBF(archivo, load=True)
             df = pd.DataFrame(iter(table)).fillna("")
             return df
+        elif ext == '.csv':
+            # Intentar con diferentes codificaciones y delimitadores comunes
+            try:
+                # Primero intentar con UTF-8 y delimitador ',' (estándar)
+                return pd.read_csv(archivo, dtype=str, encoding='utf-8', delimiter=',').fillna("")
+            except UnicodeDecodeError:
+                # Si falla, intentar con latin-1 (común para datos en español)
+                return pd.read_csv(archivo, dtype=str, encoding='latin-1', delimiter=',').fillna("")
+            except:
+                # Si aún falla, intentar con otros delimitadores (punto y coma es común en países europeos)
+                try:
+                    return pd.read_csv(archivo, dtype=str, encoding='utf-8', delimiter=';').fillna("")
+                except:
+                    return pd.read_csv(archivo, dtype=str, encoding='latin-1', delimiter=';').fillna("")
+        # Añadir soporte para TXT
+        elif ext == '.txt':
+            print("📄 Procesando archivo TXT...")
+            
+            # Intentar detectar la estructura del archivo
+            try:
+                # Primero intentar leer como CSV por si es un archivo delimitado
+                for encoding in ['utf-8', 'latin-1']:
+                    for delimiter in [',', ';', '\t', '|']:
+                        try:
+                            df = pd.read_csv(archivo, dtype=str, encoding=encoding, delimiter=delimiter)
+                            if len(df.columns) > 1:  # Si tiene más de una columna, probablemente es un CSV
+                                print(f"✅ Archivo TXT leído como CSV con delimitador '{delimiter}'")
+                                return df.fillna("")
+                        except:
+                            continue
+                
+                # Si no se pudo leer como CSV, intentar detectar formato de líneas clave-valor
+                with open(archivo, 'r', encoding='utf-8') as f:
+                    contenido = f.readlines()
+                
+                # Ver si las líneas tienen formato "clave: valor" o "clave=valor"
+                pares_clave_valor = []
+                for linea in contenido:
+                    linea = linea.strip()
+                    if not linea:
+                        continue
+                    
+                    # Intentar varios separadores comunes
+                    for sep in [':', '=', '\t']:
+                        if sep in linea:
+                            partes = linea.split(sep, 1)
+                            if len(partes) == 2:
+                                clave = partes[0].strip()
+                                valor = partes[1].strip()
+                                pares_clave_valor.append((clave, valor))
+                                break
+                
+                if pares_clave_valor:
+                    # Convertir a DataFrame
+                    print("✅ Archivo TXT interpretado como pares clave-valor")
+                    df_dict = {}
+                    for clave, valor in pares_clave_valor:
+                        df_dict[clave] = [valor]
+                    return pd.DataFrame(df_dict).fillna("")
+                
+                # Si todo lo anterior falla, leer como texto plano y crear un DataFrame simple
+                print("ℹ️ No se detectó estructura. Procesando como texto plano.")
+                with open(archivo, 'r', encoding='utf-8') as f:
+                    texto = f.read()
+                
+                # Crear un DataFrame con una sola fila y una columna "texto"
+                return pd.DataFrame({"texto": [texto]}).fillna("")
+                
+            except UnicodeDecodeError:
+                # Si falla con UTF-8, intentar con latin-1
+                try:
+                    with open(archivo, 'r', encoding='latin-1') as f:
+                        texto = f.read()
+                    return pd.DataFrame({"texto": [texto]}).fillna("")
+                except Exception as e:
+                    print(f"❌ Error al procesar archivo TXT: {e}")
+                    return None
+            except Exception as e:
+                print(f"❌ Error al procesar archivo TXT: {e}")
+                return None
         else:
             print(f"⚠️ Formato no soportado: {ext}")
             return None
