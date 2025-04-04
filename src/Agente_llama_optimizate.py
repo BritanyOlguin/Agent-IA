@@ -12,7 +12,7 @@ from llama_index.core.retrievers import VectorIndexRetriever
 
 # --- 1) CONFIGURACIÓN ---
 ruta_modelo_embeddings = r"C:\Users\Sistemas\Documents\OKIP\models\models--intfloat--e5-large-v2"
-ruta_indices = r"C:\Users\Sistemas\Documents\OKIP\llama_index_indices"  # Carpeta de índices
+ruta_indices = r"C:\Users\Sistemas\Documents\OKIP\llama_index_indices_2"  # Carpeta de índices
 ruta_modelo_llama3 = r"C:\Users\Sistemas\Documents\OKIP\models\models--meta-llama--Meta-Llama-3-8B-Instruct"
 
 # Configuración de Dispositivo y LLM
@@ -100,19 +100,119 @@ for nombre_dir in os.listdir(ruta_indices):
         index = load_index_from_storage(storage_context)
         indices[fuente] = index  # Almacenar el índice en el diccionario
 
-        retriever = VectorIndexRetriever(index=index, similarity_top_k=5)
+        retriever = VectorIndexRetriever(index=index, similarity_top_k=3)
         query_engine = index.as_query_engine(streaming=False)
-
-        # Herramienta de búsqueda general para esta fuente
-        tool = QueryEngineTool.from_defaults(
-            query_engine=query_engine,
-            name=f"busqueda_semantica_{fuente}",
-            description=f"Consulta semántica para la fuente '{fuente}'. Úsala para preguntas generales sobre esta base."
-        )
-        all_tools.append(tool)
 
     except Exception as e:
         print(f"❌ Error al cargar índice {ruta_indice}: {e}")
+        
+# Herramienta 1: Búsqueda Semántica Global Mejorada
+def buscar_en_todos_los_indices(query: str) -> str:
+    print(f"⚙️ Ejecutando búsqueda semántica global mejorada: '{query}'")
+    resultados_exactos = []
+    resultados_top_1 = []
+    query_upper = query.strip().upper()
+
+    for fuente, index in indices.items():
+        retriever = VectorIndexRetriever(index=index, similarity_top_k=3)
+        nodes = retriever.retrieve(query)
+
+        mejor_resultado = None
+        for node in nodes:
+            texto = node.node.text
+            metadata = node.node.metadata
+            resumen = [f"{k}: {v}" for k, v in metadata.items()
+                       if k not in ['fuente', 'archivo', 'fila_excel'] and v]
+
+            # NORMALIZAR nombre en metadata e ignorar el orden
+            nombre_metadata = (
+                metadata.get("nombre_completo", "")
+                or metadata.get("Nombre Completo", "")
+                or metadata.get("NOMBRE", "")
+                or metadata.get("Nombre", "")
+            ).strip().upper()
+
+            def normalizar(nombre):
+                return sorted(nombre.replace(",", "").replace("  ", " ").strip().upper().split())
+
+            if normalizar(nombre_metadata) == normalizar(query_upper):
+                resultados_exactos.append(
+                    f"✅ Coincidencia exacta en {fuente}:\n" +
+                    "\n".join(resumen)
+                )
+
+        # 🔁 SI YA TENEMOS 1 O MÁS COINCIDENCIAS EXACTAS: Salimos de la búsqueda
+        if resultados_exactos:
+            for fuente, index in indices.items():
+                retriever = VectorIndexRetriever(index=index, similarity_top_k=3)
+                nodes = retriever.retrieve(query)
+
+                mejor_resultado = None
+                for node in nodes:
+                    texto = node.node.text
+                    metadata = node.node.metadata
+                    resumen = [f"{k}: {v}" for k, v in metadata.items()
+                            if k not in ['fuente', 'archivo', 'fila_excel'] and v]
+
+                    # NORMALIZAR nombre en metadata e ignorar el orden
+                    nombre_metadata = (
+                        metadata.get("nombre_completo", "")
+                        or metadata.get("Nombre Completo", "")
+                        or metadata.get("NOMBRE", "")
+                        or metadata.get("Nombre", "")
+                    ).strip().upper()
+
+                    def normalizar(nombre):
+                        return sorted(nombre.replace(",", "").replace("  ", " ").strip().upper().split())
+
+                    if normalizar(nombre_metadata) == normalizar(query_upper):
+                        resultados_exactos.append(
+                            f"✅ Coincidencia exacta en {fuente}:\n" +
+                            "\n".join(resumen)
+                        )
+                
+                # Solo guardamos mejor resultado si NO hubo exacto en esta fuente
+                if not any(f"✅ Coincidencia exacta en {fuente}:" in r for r in resultados_exactos) and nodes:
+                    node = nodes[0]
+                    texto = node.node.text
+                    metadata = node.node.metadata
+                    resumen = [f"{k}: {v}" for k, v in metadata.items()
+                            if k not in ['fuente', 'archivo', 'fila_excel'] and v]
+                    resultados_top_1.append(
+                        f"🔹 Mejor coincidencia en {fuente}:\nTexto: {texto[:150]}...\n" + "\n".join(resumen)
+                    )
+
+
+        # Si no hay exacto, guardamos la mejor coincidencia de este índice
+        if not resultados_exactos and nodes:
+            node = nodes[0]
+            texto = node.node.text
+            metadata = node.node.metadata
+            resumen = [f"{k}: {v}" for k, v in metadata.items()
+                       if k not in ['fuente', 'archivo', 'fila_excel'] and v]
+            resultados_top_1.append(
+                f"🔹 Mejor coincidencia en {fuente}:\nTexto: {texto[:150]}...\n" + "\n".join(resumen)
+            )
+
+    if resultados_exactos:
+        respuesta_final = "\n\n".join(resultados_exactos)
+        return f"Answer: {respuesta_final}\n\n✅ Se encontraron coincidencias exactas de nombre completo. Búsqueda finalizada."
+
+    elif resultados_top_1:
+        return "\n\n".join(resultados_top_1) + "\n\n⚠️ No se encontraron coincidencias exactas, pero estas son las más relevantes por fuente."
+    else:
+        return "❌ No se encontraron resultados relevantes en ninguna fuente."
+    
+busqueda_global_tool = FunctionTool.from_defaults(
+    fn=buscar_en_todos_los_indices,
+    name="busqueda_semantica_en_todos_los_indices",
+    description=(
+        "Usa esta herramienta cuando necesites encontrar información completa de una persona, dirección, tarjeta o dato específico "
+        "en todas las bases de datos al mismo tiempo. Por ejemplo: 'Dame toda la información de Juan Pérez', '¿Quién vive en malva 101?', "
+        "'¿Qué sabes de Adrian Lino Marmolejo?'. Prioriza coincidencias exactas de nombre completo."
+    )
+)
+all_tools.insert(0, busqueda_global_tool)
 
 
 # Herramienta 2: Obtener información completa por Nombre Completo (Usa Metadatos)
@@ -120,7 +220,6 @@ def obtener_info_por_nombre(nombre_completo: str) -> str:
     """
     Busca toda la información asociada a una persona dado su nombre completo,
     intentando diferentes campos de nombre en todos los índices disponibles.
-    También maneja el caso de nombres separados en campos PATERNO, MATERNO y NOMBRE.
     """
     print(f"⚙️ Ejecutando herramienta: obtener_info_por_nombre con nombre='{nombre_completo}'")
     resultados = []
@@ -141,7 +240,7 @@ def obtener_info_por_nombre(nombre_completo: str) -> str:
                 ExactMatchFilter(key="fuente", value=fuente)
             ])
             
-            retriever = VectorIndexRetriever(index=index, similarity_top_k=1, filters=filters)
+            retriever = VectorIndexRetriever(index=index, similarity_top_k=3, filters=filters)
             nodes = retriever.retrieve(nombre_completo)
             
             if nodes:
@@ -149,88 +248,48 @@ def obtener_info_por_nombre(nombre_completo: str) -> str:
                 encontrado = True
                 metadata = nodes[0].node.metadata
                 info = [f"{k}: {v}" for k, v in metadata.items() 
-                       if k not in ['fuente', 'archivo', 'fila_excel', 'fila_origen'] and v]
+                       if k not in ['fuente', 'archivo', 'fila_excel'] and v]
                 resultados.append(f"Información encontrada en {fuente} para {nombre_completo}:\n" + "\n".join(info))
         
-        # Buscar nombre en formato separado (PATERNO, MATERNO, NOMBRE)
+        # Si no encontramos con ningún campo, intentar una búsqueda más flexible
         if not encontrado:
-            # Intentar formar un nombre completo a partir de los componentes
-            retriever = VectorIndexRetriever(index=index, similarity_top_k=10)
+            # Búsqueda vectorial sin filtros exactos
+            retriever = VectorIndexRetriever(index=index, similarity_top_k=3)
             nodes = retriever.retrieve(nombre_completo)
             
             for node in nodes:
+                # Verificar si alguna parte del nombre coincide
                 metadata = node.node.metadata
+                nombre_en_metadata = ""
                 
-                # Verificar si tenemos los campos separados
-                paterno = metadata.get("PATERNO", "")
-                materno = metadata.get("MATERNO", "")
-                primer_nombre = metadata.get("NOMBRE", "")
+                # Obtener el nombre del metadata, cualquiera que sea el campo
+                for campo in campos_nombre:
+                    if campo in metadata:
+                        nombre_en_metadata = metadata[campo]
+                        break
                 
-                # Intentar formar nombre completo de diferentes maneras
-                posibles_nombres = []
-                if paterno and materno and primer_nombre:
-                    posibles_nombres.append(f"{paterno} {materno} {primer_nombre}")
-                    posibles_nombres.append(f"{primer_nombre} {paterno} {materno}")
-                
-                # Verificar si alguna versión coincide con el nombre buscado
-                if any(nombre.upper().strip() == nombre_completo.upper().strip() for nombre in posibles_nombres):
-                    encontrado = True
-                    info = [f"{k}: {v}" for k, v in metadata.items() 
-                           if k not in ['fuente', 'archivo', 'fila_excel', 'fila_origen'] and v]
-                    resultados.append(f"Información encontrada en {fuente} para {nombre_completo}:\n" + "\n".join(info))
-                    break
-                
-                # Si no hay coincidencia exacta, buscar coincidencia parcial
+                # Verificar coincidencia parcial (todas las palabras del nombre buscado están en el nombre encontrado)
                 palabras_buscadas = [p.upper() for p in nombre_completo.split() if len(p) > 2]
-                
-                # Combinar todos los campos de nombre para buscar coincidencia parcial
-                nombre_compuesto = f"{paterno} {materno} {primer_nombre}".upper()
-                
-                if nombre_compuesto and all(p in nombre_compuesto for p in palabras_buscadas):
+                if nombre_en_metadata and all(p in nombre_en_metadata.upper() for p in palabras_buscadas):
                     info = [f"{k}: {v}" for k, v in metadata.items() 
-                           if k not in ['fuente', 'archivo', 'fila_excel', 'fila_origen'] and v]
+                        if k not in ['fuente', 'archivo', 'fila_excel'] and v]
                     resultados.append(f"Posible coincidencia en {fuente} para {nombre_completo}:\n" + "\n".join(info))
-                    break  # Solo mostrar la primera coincidencia parcial
 
     if resultados:
         return "\n\n".join(resultados)
     else:
         return f"No se encontró información para la persona con nombre: {nombre_completo}"
 
-# 2. Agregar una nueva herramienta para buscar por nombre separado
-
-def buscar_por_nombre_compuesto(paterno: str, materno: str, nombre: str) -> str:
-    """
-    Busca una persona usando sus apellidos y nombre separados.
-    """
-    print(f"⚙️ Ejecutando herramienta: buscar_por_nombre_compuesto con P:{paterno}, M:{materno}, N:{nombre}")
-    
-    # Formar diferentes variantes del nombre completo
-    nombre_completo_1 = f"{paterno} {materno} {nombre}".strip()
-    nombre_completo_2 = f"{nombre} {paterno} {materno}".strip()
-    
-    # Buscar con la primera variante
-    resultado_1 = obtener_info_por_nombre(nombre_completo_1)
-    
-    # Si no se encontró con la primera variante, intentar con la segunda
-    if "No se encontró información" in resultado_1:
-        resultado_2 = obtener_info_por_nombre(nombre_completo_2)
-        if "No se encontró información" not in resultado_2:
-            return resultado_2
-    
-    return resultado_1
-
-nombre_compuesto_tool = FunctionTool.from_defaults(
-    fn=buscar_por_nombre_compuesto,
-    name="buscar_por_nombre_compuesto",
+info_nombre_tool = FunctionTool.from_defaults(
+    fn=obtener_info_por_nombre,
+    name="obtener_info_por_nombre_completo",
     description=(
-        "Utiliza esta herramienta cuando tengas los componentes separados del nombre "
-        "(apellido paterno, apellido materno y nombre). "
-        "Por ejemplo: 'Busca información de la persona con apellido paterno Acevedo, "
-        "apellido materno Perez y nombre Guadalupe'."
+        "Utiliza esta herramienta EXCLUSIVAMENTE cuando necesites obtener TODA la información "
+        "disponible de una persona y tengas su NOMBRE COMPLETO exacto. "
+        "Por ejemplo: 'Dame la información de Juan Perez Garcia' o 'Datos de Maria Lopez Aguilar'."
     )
 )
-all_tools.append(nombre_compuesto_tool)
+all_tools.insert(1, info_nombre_tool)
 
 # Herramienta 3: Buscar personas por atributo específico (Campo y Valor)
 def buscar_personas_por_atributo(campo: str, valor: str) -> str:
@@ -251,18 +310,6 @@ def buscar_personas_por_atributo(campo: str, valor: str) -> str:
         "colonia": "Colonia", "COLONIA": "Colonia",
         "sector": "Sector", "SECTOR": "Sector",
         "municipio": "Municipio", "MUNICIPIO": "Municipio",
-        "clave ife": "CLAVE IFE", "ife": "CLAVE IFE",
-        "paterno": "PATERNO", "apellido paterno": "PATERNO",
-        "materno": "MATERNO", "apellido materno": "MATERNO",
-        "edo de origen": "EDO DE ORIGEN", "estado de origen": "EDO DE ORIGEN",
-        "sexo": "SEXO", "género": "SEXO",
-        "ocupacion": "OCUPACION", "ocupación": "OCUPACION",
-        "domicilio: calle": "DOMICILIO: CALLE", "calle": "DOMICILIO: CALLE",
-        "número": "NÚMERO", "num": "NÚMERO", "numero": "NÚMERO",
-        "código postal": "CODIGO POSTAL", "codigo postal": "CODIGO POSTAL", "cp": "CODIGO POSTAL",
-        "fecha afiliacion": "FECHA_AFILIACION", "fecha_afiliacion": "FECHA_AFILIACION", 
-        "fecha de afiliacion": "FECHA_AFILIACION", "fecha de afiliación": "FECHA_AFILIACION",
-        "entidad": "ENTIDAD", "estado": "ENTIDAD", "entidad federativa": "ENTIDAD",
         # Añade más mapeos si es necesario
     }
     campo_normalizado = campo_map.get(campo.lower(), campo.capitalize())  # Intentar normalizar
@@ -273,7 +320,7 @@ def buscar_personas_por_atributo(campo: str, valor: str) -> str:
             ExactMatchFilter(key="fuente", value=fuente)  # Filtrar por fuente
         ])
         # Recuperar más nodos para ver si hay múltiples coincidencias
-        retriever = VectorIndexRetriever(index=index, similarity_top_k=10, filters=filters)
+        retriever = VectorIndexRetriever(index=index, similarity_top_k=3, filters=filters)
         nodes = retriever.retrieve(f"{campo_normalizado} es {valor}")  # Query semántica relacionada
 
         if nodes:
@@ -315,7 +362,8 @@ atributo_tool = FunctionTool.from_defaults(
         "'Busca personas cuya calle sea Reforma'. Debes especificar el CAMPO y el VALOR."
     )
 )
-all_tools.append(atributo_tool)
+all_tools.insert(2, atributo_tool)
+
 
 # --- 4) CREAR Y EJECUTAR EL AGENTE ---
 

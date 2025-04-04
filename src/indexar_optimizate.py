@@ -9,11 +9,99 @@ from llama_index.core import VectorStoreIndex
 from llama_index.core.schema import Document
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.core.settings import Settings
+import unicodedata
+import re
+
+def normalizar_texto(texto):
+    """
+    Normaliza el texto para mejorar la consistencia en búsquedas e indexación
+    """
+    if not isinstance(texto, str):
+        texto = str(texto)
+    
+    # Convertir a minúsculas
+    texto = texto.lower()
+    
+    # Eliminar acentos
+    texto = ''.join(
+        char for char in unicodedata.normalize('NFKD', texto)
+        if unicodedata.category(char) != 'Mn'
+    )
+    
+    # Eliminar caracteres especiales y mantener solo letras, números y espacios
+    texto = re.sub(r'[^a-z0-9\s]', '', texto)
+    
+    # Eliminar espacios extra
+    texto = ' '.join(texto.split())
+    
+    return texto.strip()
+
+def crear_nombre_completo(row):
+    """
+    Crea un nombre completo a partir de columnas de nombre
+    """
+    # Listas de posibles nombres de columnas (añadir versiones en mayúsculas)
+    columnas_nombre = ['nombre', 'NOMBRE']
+    columnas_apellido_paterno = ['apellido_paterno', 'apellido_p', 'a_paterno', 'PATERNO']
+    columnas_apellido_materno = ['apellido_materno', 'apellido_m', 'a_materno', 'MATERNO']
+    
+    # Convertir todas las columnas a minúsculas para búsqueda flexible
+    columnas_df = [col.lower() for col in row.index]
+    
+    # Variables para columnas encontradas
+    col_nombre = col_apellido_paterno = col_apellido_materno = None
+    
+    # Buscar columnas de nombre
+    for nombre_pos in columnas_nombre:
+        for col in columnas_df:
+            if nombre_pos.lower() in col:
+                col_nombre = row.index[columnas_df.index(col)]
+                break
+        if col_nombre:
+            break
+    
+    # Buscar columnas de apellido paterno
+    for apellido_pos in columnas_apellido_paterno:
+        for col in columnas_df:
+            if apellido_pos.lower() in col:
+                col_apellido_paterno = row.index[columnas_df.index(col)]
+                break
+        if col_apellido_paterno:
+            break
+    
+    # Buscar columnas de apellido materno
+    for apellido_pos in columnas_apellido_materno:
+        for col in columnas_df:
+            if apellido_pos.lower() in col:
+                col_apellido_materno = row.index[columnas_df.index(col)]
+                break
+        if col_apellido_materno:
+            break
+    
+    # Construir nombre completo
+    partes_nombre = []
+    
+    # Añadir nombre si existe
+    if col_nombre and str(row[col_nombre]).strip():
+        partes_nombre.append(str(row[col_nombre]).strip())
+    
+    # Añadir apellido paterno si existe
+    if col_apellido_paterno and str(row[col_apellido_paterno]).strip():
+        partes_nombre.append(str(row[col_apellido_paterno]).strip())
+    
+    # Añadir apellido materno si existe
+    if col_apellido_materno and str(row[col_apellido_materno]).strip():
+        partes_nombre.append(str(row[col_apellido_materno]).strip())
+    
+    # Unir y limpiar
+    nombre_completo = " ".join(partes_nombre).strip()
+    
+    return nombre_completo
 
 # --- CONFIGURACIÓN GLOBAL ---
 ruta_modelo_embeddings = r"C:\Users\Sistemas\Documents\OKIP\models\models--intfloat--e5-large-v2"
 carpeta_bd = r"C:\Users\Sistemas\Documents\OKIP\archivos"
-carpeta_indices = r"C:\Users\Sistemas\Documents\OKIP\llama_index_indices"
+carpeta_indices = r"C:\Users\Sistemas\Documents\OKIP\llama_index_indices_2"
 
 os.makedirs(carpeta_indices, exist_ok=True)
 
@@ -165,17 +253,33 @@ for archivo_nombre in os.listdir(carpeta_bd):
 
     documentos_totales = []
     with tqdm.tqdm(total=total_filas, desc="📄 Preparando documentos", unit=" filas") as pbar:
+        # Modificar la preparación de documentos
         for i, row in df.iterrows():
+            # Generar nombre completo normalizado
+            nombre_completo = normalizar_texto(crear_nombre_completo(row))
+
             datos_fila = {col: str(row[col]).strip() for col in df.columns}
-            datos_fila_limpios = {col: "" if pd.isna(v) or str(v).lower() in ["nan", "3586127"] else str(v) for col, v in datos_fila.items()}
+            datos_fila_limpios = {
+                normalizar_texto(col): normalizar_texto(v) 
+                for col, v in datos_fila.items() 
+                if not pd.isna(v) and str(v).lower() not in ["nan", "3586127"]
+            }
+            
             texto_base = "\n".join([f"{col}: {v}" for col, v in datos_fila_limpios.items() if v])
             texto_a_incrustar = texto_base
+
+            # Modificar metadata para incluir nombre_completo normalizado
             metadata = {
                 "fuente": nombre_fuente,
                 "archivo": nombre_archivo,
                 "fila_origen": i,
+                "nombre_completo": nombre_completo,
                 **datos_fila_limpios
             }
+
+            # Añadir nombre completo al texto de indexación
+            texto_a_incrustar += f"\nnombre_completo: {nombre_completo}"
+
             documentos_totales.append(Document(text=texto_a_incrustar, metadata=metadata))
             pbar.update(1)
 
