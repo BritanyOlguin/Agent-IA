@@ -38,20 +38,15 @@ def normalizar_texto(texto):
 
 def crear_nombre_completo(row):
     """
-    Crea un nombre completo a partir de columnas de nombre
+    Crea un nombre completo a partir de columnas si existen nombre, apellido paterno y materno.
     """
-    # Listas de posibles nombres de columnas (añadir versiones en mayúsculas)
     columnas_nombre = ['nombre', 'NOMBRE']
     columnas_apellido_paterno = ['apellido_paterno', 'apellido_p', 'a_paterno', 'PATERNO']
     columnas_apellido_materno = ['apellido_materno', 'apellido_m', 'a_materno', 'MATERNO']
-    
-    # Convertir todas las columnas a minúsculas para búsqueda flexible
+
     columnas_df = [col.lower() for col in row.index]
-    
-    # Variables para columnas encontradas
     col_nombre = col_apellido_paterno = col_apellido_materno = None
-    
-    # Buscar columnas de nombre
+
     for nombre_pos in columnas_nombre:
         for col in columnas_df:
             if nombre_pos.lower() in col:
@@ -59,8 +54,7 @@ def crear_nombre_completo(row):
                 break
         if col_nombre:
             break
-    
-    # Buscar columnas de apellido paterno
+
     for apellido_pos in columnas_apellido_paterno:
         for col in columnas_df:
             if apellido_pos.lower() in col:
@@ -68,8 +62,7 @@ def crear_nombre_completo(row):
                 break
         if col_apellido_paterno:
             break
-    
-    # Buscar columnas de apellido materno
+
     for apellido_pos in columnas_apellido_materno:
         for col in columnas_df:
             if apellido_pos.lower() in col:
@@ -77,26 +70,13 @@ def crear_nombre_completo(row):
                 break
         if col_apellido_materno:
             break
+
+    if col_nombre and col_apellido_paterno and col_apellido_materno:
+        partes = [row[col_nombre], row[col_apellido_paterno], row[col_apellido_materno]]
+        if all(str(p).strip() for p in partes):
+            return " ".join(str(p).strip() for p in partes)
     
-    # Construir nombre completo
-    partes_nombre = []
-    
-    # Añadir nombre si existe
-    if col_nombre and str(row[col_nombre]).strip():
-        partes_nombre.append(str(row[col_nombre]).strip())
-    
-    # Añadir apellido paterno si existe
-    if col_apellido_paterno and str(row[col_apellido_paterno]).strip():
-        partes_nombre.append(str(row[col_apellido_paterno]).strip())
-    
-    # Añadir apellido materno si existe
-    if col_apellido_materno and str(row[col_apellido_materno]).strip():
-        partes_nombre.append(str(row[col_apellido_materno]).strip())
-    
-    # Unir y limpiar
-    nombre_completo = " ".join(partes_nombre).strip()
-    
-    return nombre_completo
+    return None
 
 # --- CONFIGURACIÓN GLOBAL ---
 ruta_modelo_embeddings = r"C:\Users\Sistemas\Documents\OKIP\models\models--intfloat--e5-large-v2"
@@ -255,31 +235,41 @@ for archivo_nombre in os.listdir(carpeta_bd):
     with tqdm.tqdm(total=total_filas, desc="📄 Preparando documentos", unit=" filas") as pbar:
         # Modificar la preparación de documentos
         for i, row in df.iterrows():
-            # Generar nombre completo normalizado
-            nombre_completo = normalizar_texto(crear_nombre_completo(row))
+            # 1. Generar nombre completo si es posible
+            nombre_completo_raw = crear_nombre_completo(row)
+            nombre_completo = normalizar_texto(nombre_completo_raw) if nombre_completo_raw else None
 
+            # 2. Convertir todo a texto limpio y normalizado
             datos_fila = {col: str(row[col]).strip() for col in df.columns}
             datos_fila_limpios = {
                 normalizar_texto(col): normalizar_texto(v) 
                 for col, v in datos_fila.items() 
                 if not pd.isna(v) and str(v).lower() not in ["nan", "3586127"]
             }
-            
+
+            # 3. Si se generó nombre completo, eliminar nombre, paterno, materno
+            if nombre_completo:
+                for key in list(datos_fila_limpios.keys()):
+                    if any(x in key for x in ["nombre", "apellido_p", "apellido_m", "a_paterno", "a_materno", "paterno", "materno"]):
+                        del datos_fila_limpios[key]
+
+            # 4. Generar texto e incluir nombre_completo si aplica
             texto_base = "\n".join([f"{col}: {v}" for col, v in datos_fila_limpios.items() if v])
             texto_a_incrustar = texto_base
+            if nombre_completo:
+                texto_a_incrustar += f"\nnombre_completo: {nombre_completo}"
 
-            # Modificar metadata para incluir nombre_completo normalizado
+            # 5. Generar metadata, también condicional
             metadata = {
                 "fuente": nombre_fuente,
                 "archivo": nombre_archivo,
                 "fila_origen": i,
-                "nombre_completo": nombre_completo,
                 **datos_fila_limpios
             }
+            if nombre_completo:
+                metadata["nombre_completo"] = nombre_completo
 
-            # Añadir nombre completo al texto de indexación
-            texto_a_incrustar += f"\nnombre_completo: {nombre_completo}"
-
+            # 6. Guardar el documento
             documentos_totales.append(Document(text=texto_a_incrustar, metadata=metadata))
             pbar.update(1)
 

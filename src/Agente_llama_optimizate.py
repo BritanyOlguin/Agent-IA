@@ -126,9 +126,8 @@ def buscar_en_todos_los_indices(query: str) -> str:
             metadata = node.node.metadata
             nombre_metadata = (
                 metadata.get("nombre_completo", "")
-                or metadata.get("Nombre Completo", "")
-                or metadata.get("NOMBRE", "")
-                or metadata.get("Nombre", "")
+                or metadata.get("nombre completo", "")
+                or metadata.get("nombre", "")
             ).strip().upper()
 
             def normalizar(nombre):
@@ -146,9 +145,8 @@ def buscar_en_todos_los_indices(query: str) -> str:
             metadata = node.node.metadata
             nombre_metadata = (
                 metadata.get("nombre_completo", "")
-                or metadata.get("Nombre Completo", "")
-                or metadata.get("NOMBRE", "")
-                or metadata.get("Nombre", "")
+                or metadata.get("nombre completo", "")
+                or metadata.get("nombre", "")
             ).strip().upper()
 
             sim = similitud(nombre_metadata, query_upper)
