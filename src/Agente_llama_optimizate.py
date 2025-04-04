@@ -112,19 +112,14 @@ def buscar_en_todos_los_indices(query: str) -> str:
     resultados_exactos = []
     resultados_top_1 = []
     query_upper = query.strip().upper()
+    ya_guardados = set()
 
     for fuente, index in indices.items():
         retriever = VectorIndexRetriever(index=index, similarity_top_k=3)
         nodes = retriever.retrieve(query)
 
-        mejor_resultado = None
         for node in nodes:
-            texto = node.node.text
             metadata = node.node.metadata
-            resumen = [f"{k}: {v}" for k, v in metadata.items()
-                       if k not in ['fuente', 'archivo', 'fila_excel'] and v]
-
-            # NORMALIZAR nombre en metadata e ignorar el orden
             nombre_metadata = (
                 metadata.get("nombre_completo", "")
                 or metadata.get("Nombre Completo", "")
@@ -135,53 +130,12 @@ def buscar_en_todos_los_indices(query: str) -> str:
             def normalizar(nombre):
                 return sorted(nombre.replace(",", "").replace("  ", " ").strip().upper().split())
 
-            if normalizar(nombre_metadata) == normalizar(query_upper):
+            if normalizar(nombre_metadata) == normalizar(query_upper) and fuente not in ya_guardados:
+                resumen = [f"{k}: {v}" for k, v in metadata.items() if k not in ['fuente', 'archivo', 'fila_excel'] and v]
                 resultados_exactos.append(
-                    f"✅ Coincidencia exacta en {fuente}:\n" +
-                    "\n".join(resumen)
+                    f"✅ Coincidencia exacta en {fuente}:\n" + "\n".join(resumen)
                 )
-
-        # 🔁 SI YA TENEMOS 1 O MÁS COINCIDENCIAS EXACTAS: Salimos de la búsqueda
-        if resultados_exactos:
-            for fuente, index in indices.items():
-                retriever = VectorIndexRetriever(index=index, similarity_top_k=3)
-                nodes = retriever.retrieve(query)
-
-                mejor_resultado = None
-                for node in nodes:
-                    texto = node.node.text
-                    metadata = node.node.metadata
-                    resumen = [f"{k}: {v}" for k, v in metadata.items()
-                            if k not in ['fuente', 'archivo', 'fila_excel'] and v]
-
-                    # NORMALIZAR nombre en metadata e ignorar el orden
-                    nombre_metadata = (
-                        metadata.get("nombre_completo", "")
-                        or metadata.get("Nombre Completo", "")
-                        or metadata.get("NOMBRE", "")
-                        or metadata.get("Nombre", "")
-                    ).strip().upper()
-
-                    def normalizar(nombre):
-                        return sorted(nombre.replace(",", "").replace("  ", " ").strip().upper().split())
-
-                    if normalizar(nombre_metadata) == normalizar(query_upper):
-                        resultados_exactos.append(
-                            f"✅ Coincidencia exacta en {fuente}:\n" +
-                            "\n".join(resumen)
-                        )
-                
-                # Solo guardamos mejor resultado si NO hubo exacto en esta fuente
-                if not any(f"✅ Coincidencia exacta en {fuente}:" in r for r in resultados_exactos) and nodes:
-                    node = nodes[0]
-                    texto = node.node.text
-                    metadata = node.node.metadata
-                    resumen = [f"{k}: {v}" for k, v in metadata.items()
-                            if k not in ['fuente', 'archivo', 'fila_excel'] and v]
-                    resultados_top_1.append(
-                        f"🔹 Mejor coincidencia en {fuente}:\nTexto: {texto[:150]}...\n" + "\n".join(resumen)
-                    )
-
+                ya_guardados.add(fuente)
 
         # Si no hay exacto, guardamos la mejor coincidencia de este índice
         if not resultados_exactos and nodes:
@@ -196,7 +150,7 @@ def buscar_en_todos_los_indices(query: str) -> str:
 
     if resultados_exactos:
         respuesta_final = "\n\n".join(resultados_exactos)
-        return f"Answer: {respuesta_final}\n\n✅ Se encontraron coincidencias exactas de nombre completo. Búsqueda finalizada."
+        return respuesta_final
 
     elif resultados_top_1:
         return "\n\n".join(resultados_top_1) + "\n\n⚠️ No se encontraron coincidencias exactas, pero estas son las más relevantes por fuente."
@@ -213,83 +167,6 @@ busqueda_global_tool = FunctionTool.from_defaults(
     )
 )
 all_tools.insert(0, busqueda_global_tool)
-
-
-# Herramienta 2: Obtener información completa por Nombre Completo (Usa Metadatos)
-def obtener_info_por_nombre(nombre_completo: str) -> str:
-    """
-    Busca toda la información asociada a una persona dado su nombre completo,
-    intentando diferentes campos de nombre en todos los índices disponibles.
-    """
-    print(f"⚙️ Ejecutando herramienta: obtener_info_por_nombre con nombre='{nombre_completo}'")
-    resultados = []
-    
-    # Lista de posibles campos de nombre en los diferentes índices
-    campos_nombre = ["Nombre Completo", "NOMBRE", "Nombre"]
-    
-    for fuente, index in indices.items():
-        encontrado = False
-        
-        # Probar cada campo de nombre posible
-        for campo_nombre in campos_nombre:
-            if encontrado:
-                break
-                
-            filters = MetadataFilters(filters=[
-                ExactMatchFilter(key=campo_nombre, value=nombre_completo.strip()),
-                ExactMatchFilter(key="fuente", value=fuente)
-            ])
-            
-            retriever = VectorIndexRetriever(index=index, similarity_top_k=3, filters=filters)
-            nodes = retriever.retrieve(nombre_completo)
-            
-            if nodes:
-                # Encontramos coincidencia con este campo
-                encontrado = True
-                metadata = nodes[0].node.metadata
-                info = [f"{k}: {v}" for k, v in metadata.items() 
-                       if k not in ['fuente', 'archivo', 'fila_excel'] and v]
-                resultados.append(f"Información encontrada en {fuente} para {nombre_completo}:\n" + "\n".join(info))
-        
-        # Si no encontramos con ningún campo, intentar una búsqueda más flexible
-        if not encontrado:
-            # Búsqueda vectorial sin filtros exactos
-            retriever = VectorIndexRetriever(index=index, similarity_top_k=3)
-            nodes = retriever.retrieve(nombre_completo)
-            
-            for node in nodes:
-                # Verificar si alguna parte del nombre coincide
-                metadata = node.node.metadata
-                nombre_en_metadata = ""
-                
-                # Obtener el nombre del metadata, cualquiera que sea el campo
-                for campo in campos_nombre:
-                    if campo in metadata:
-                        nombre_en_metadata = metadata[campo]
-                        break
-                
-                # Verificar coincidencia parcial (todas las palabras del nombre buscado están en el nombre encontrado)
-                palabras_buscadas = [p.upper() for p in nombre_completo.split() if len(p) > 2]
-                if nombre_en_metadata and all(p in nombre_en_metadata.upper() for p in palabras_buscadas):
-                    info = [f"{k}: {v}" for k, v in metadata.items() 
-                        if k not in ['fuente', 'archivo', 'fila_excel'] and v]
-                    resultados.append(f"Posible coincidencia en {fuente} para {nombre_completo}:\n" + "\n".join(info))
-
-    if resultados:
-        return "\n\n".join(resultados)
-    else:
-        return f"No se encontró información para la persona con nombre: {nombre_completo}"
-
-info_nombre_tool = FunctionTool.from_defaults(
-    fn=obtener_info_por_nombre,
-    name="obtener_info_por_nombre_completo",
-    description=(
-        "Utiliza esta herramienta EXCLUSIVAMENTE cuando necesites obtener TODA la información "
-        "disponible de una persona y tengas su NOMBRE COMPLETO exacto. "
-        "Por ejemplo: 'Dame la información de Juan Perez Garcia' o 'Datos de Maria Lopez Aguilar'."
-    )
-)
-all_tools.insert(1, info_nombre_tool)
 
 # Herramienta 3: Buscar personas por atributo específico (Campo y Valor)
 def buscar_personas_por_atributo(campo: str, valor: str) -> str:
