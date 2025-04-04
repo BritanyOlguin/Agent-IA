@@ -9,6 +9,10 @@ from llama_index.core.tools import FunctionTool, QueryEngineTool
 from llama_index.core.agent import ReActAgent
 from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter
 from llama_index.core.retrievers import VectorIndexRetriever
+from difflib import SequenceMatcher
+
+def similitud(texto1, texto2):
+    return SequenceMatcher(None, texto1, texto2).ratio()
 
 # --- 1) CONFIGURACIÓN ---
 ruta_modelo_embeddings = r"C:\Users\Sistemas\Documents\OKIP\models\models--intfloat--e5-large-v2"
@@ -137,25 +141,36 @@ def buscar_en_todos_los_indices(query: str) -> str:
                 )
                 ya_guardados.add(fuente)
 
-        # Si no hay exacto, guardamos la mejor coincidencia de este índice
-        if not resultados_exactos and nodes:
-            node = nodes[0]
-            texto = node.node.text
+        # Si no hay exacto, guardar las mejores coincidencias con similitud >= 0.9
+        for node in nodes:
             metadata = node.node.metadata
-            resumen = [f"{k}: {v}" for k, v in metadata.items()
-                       if k not in ['fuente', 'archivo', 'fila_excel'] and v]
-            resultados_top_1.append(
-                f"🔹 Mejor coincidencia en {fuente}:\nTexto: {texto[:150]}...\n" + "\n".join(resumen)
-            )
+            nombre_metadata = (
+                metadata.get("nombre_completo", "")
+                or metadata.get("Nombre Completo", "")
+                or metadata.get("NOMBRE", "")
+                or metadata.get("Nombre", "")
+            ).strip().upper()
+
+            sim = similitud(nombre_metadata, query_upper)
+
+            if sim >= 0.5 and fuente not in ya_guardados:
+                resumen = [f"{k}: {v}" for k, v in metadata.items() if k not in ['fuente', 'archivo', 'fila_excel'] and v]
+                resultados_top_1.append(
+                    f"🔹 Coincidencia cercana en {fuente} (Similitud {sim:.2f}):\n" + "\n".join(resumen)
+                )
+                ya_guardados.add(fuente)
+
 
     if resultados_exactos:
-        respuesta_final = "\n\n".join(resultados_exactos)
+        respuesta_final = "✅ Se encontraron estas coincidencias exactas en los archivos:\n\n" + "\n\n".join(resultados_exactos)
         return respuesta_final
 
     elif resultados_top_1:
-        return "\n\n".join(resultados_top_1) + "\n\n⚠️ No se encontraron coincidencias exactas, pero estas son las más relevantes por fuente."
+        return "⚠️ No se encontraron coincidencias exactas, pero se encontraron coincidencias cercanas (≥60% de similitud):\n\n" + "\n\n".join(resultados_top_1)
+
     else:
         return "❌ No se encontraron resultados relevantes en ninguna fuente."
+
     
 busqueda_global_tool = FunctionTool.from_defaults(
     fn=buscar_en_todos_los_indices,
@@ -249,7 +264,7 @@ try:
     agent = ReActAgent.from_tools(
         tools=all_tools,
         llm=llm,
-        verbose=True  # Muestra los pasos de pensamiento del agente
+        verbose=False  # Muestra los pasos de pensamiento del agente
     )
     print("✅ Agente creado correctamente.")
 except Exception as e:
@@ -267,8 +282,14 @@ while True:
         continue
 
     try:
-        response = agent.chat(prompt)
-        print(f"\nRespuesta: {response}\n")
+        # Ejecutamos la herramienta y obtenemos la salida
+        respuesta_herramienta = buscar_en_todos_los_indices(prompt)
+
+        # Guardamos la salida en una variable
+        salida_azul = respuesta_herramienta  # <-- ESTO ES NUEVO
+
+        # Imprimimos la variable "salida_azul"
+        print(f"\nSalida de la herramienta:\n{salida_azul}\n")
     except Exception as e:
         print(f"❌ Ocurrió un error durante la ejecución del agente: {e}")
         # Podrías intentar resetear el agente si los errores son persistentes
