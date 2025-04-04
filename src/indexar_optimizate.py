@@ -101,7 +101,7 @@ def crear_nombre_completo(row):
 # --- CONFIGURACIÓN GLOBAL ---
 ruta_modelo_embeddings = r"C:\Users\Sistemas\Documents\OKIP\models\models--intfloat--e5-large-v2"
 carpeta_bd = r"C:\Users\Sistemas\Documents\OKIP\archivos"
-carpeta_indices = r"C:\Users\Sistemas\Documents\OKIP\llama_index_indices_2"
+carpeta_indices = r"C:\Users\Sistemas\Documents\OKIP\llama_index_indices"
 
 os.makedirs(carpeta_indices, exist_ok=True)
 

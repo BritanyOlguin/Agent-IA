@@ -12,7 +12,7 @@ from llama_index.core.retrievers import VectorIndexRetriever
 
 # --- 1) CONFIGURACIÓN ---
 ruta_modelo_embeddings = r"C:\Users\Sistemas\Documents\OKIP\models\models--intfloat--e5-large-v2"
-ruta_indices = r"C:\Users\Sistemas\Documents\OKIP\llama_index_indices_2"  # Carpeta de índices
+ruta_indices = r"C:\Users\Sistemas\Documents\OKIP\llama_index_indices"
 ruta_modelo_llama3 = r"C:\Users\Sistemas\Documents\OKIP\models\models--meta-llama--Meta-Llama-3-8B-Instruct"
 
 # Configuración de Dispositivo y LLM
