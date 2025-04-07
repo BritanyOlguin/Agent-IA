@@ -18,6 +18,38 @@ sys.path.append(r"C:\Users\Sistemas\Documents\OKIP\src")
 from utils import normalizar_texto
 import re
 
+def extraer_valor_desde_pregunta(prompt: str) -> str:
+    """
+    Extrae un valor probable desde la pregunta, eliminando verbos como 'vive en', 'está en', etc.
+    """
+    prompt = prompt.strip().lower()
+
+    # Extraer número si existe
+    numeros = re.findall(r"\d{7,}", prompt)
+    if numeros:
+        return numeros[0]
+
+    # Frases comunes para buscar ubicación o valor
+    frases_clave = [
+        r"quien vive en\s+([a-zA-ZáéíóúñÑ0-9\s\-]+)",
+        r"vive en\s+([a-zA-ZáéíóúñÑ0-9\s\-]+)",
+        r"quien esta en\s+([a-zA-ZáéíóúñÑ0-9\s\-]+)",
+        r"en\s+([a-zA-ZáéíóúñÑ0-9\s\-]+)$",
+        r"de\s+([a-zA-ZáéíóúñÑ0-9\s\-]+)$"
+    ]
+
+    for frase in frases_clave:
+        match = re.search(frase, prompt)
+        if match:
+            return match.group(1).strip()
+
+    # Último recurso: devolver última palabra
+    palabras = prompt.split()
+    if palabras:
+        return palabras[-1]
+    return prompt
+
+
 def detectar_campo_y_valor(prompt: str):
     prompt_lower = prompt.lower()
 
@@ -43,6 +75,44 @@ def detectar_campo_y_valor(prompt: str):
                 return campo_estandarizado, numeros[0]
 
     return None, None
+
+def buscar_por_valor_en_campos_similares(valor: str, campos: list[str], carpeta_indices: str) -> str:
+    print(f"\n🔍 Buscando registros donde algún campo contiene '{valor}' (búsqueda ampliada)\n")
+    valor_normalizado = normalizar_texto(valor)
+    resultados = []
+
+    for campo in campos:
+        campo_normalizado = normalizar_texto(campo)
+
+        for nombre_dir in os.listdir(carpeta_indices):
+            ruta_indice = os.path.join(carpeta_indices, nombre_dir)
+            if not os.path.isdir(ruta_indice) or not os.path.exists(os.path.join(ruta_indice, "docstore.json")):
+                continue
+
+            fuente = nombre_dir.replace("index_", "")
+            try:
+                storage_context = StorageContext.from_defaults(persist_dir=ruta_indice)
+                index = load_index_from_storage(storage_context)
+
+                filters = MetadataFilters(filters=[
+                    ExactMatchFilter(key=campo_normalizado, value=valor_normalizado)
+                ])
+                retriever = VectorIndexRetriever(index=index, similarity_top_k=5, filters=filters)
+                nodes = retriever.retrieve(f"{campo} es {valor}")
+
+                if nodes:
+                    for node in nodes:
+                        metadata = node.node.metadata
+                        resumen = [f"{k}: {v}" for k, v in metadata.items() if k not in ['fuente', 'archivo', 'fila_excel'] and v]
+                        resultados.append(f"✅ Coincidencia en {fuente} (campo '{campo}'):\n" + "\n".join(resumen))
+            except Exception as e:
+                print(f"⚠️ Error buscando en {fuente}: {e}")
+                continue
+
+    if resultados:
+        return "\n".join(resultados)
+    else:
+        return f"❌ No se encontraron coincidencias en los campos {campos} para el valor '{valor}'."
 
 def similitud(texto1, texto2):
     return SequenceMatcher(None, texto1, texto2).ratio()
@@ -362,13 +432,18 @@ while True:
         if campo and valor:
             respuesta_herramienta = buscar_por_atributo_en_indices(campo, valor, carpeta_indices=ruta_indices)
         else:
-            respuesta_herramienta = buscar_en_todos_los_indices(prompt)
+            valor_extraido = extraer_valor_desde_pregunta(prompt)
+            posibles_campos = ['direccion', 'colonia', 'municipio', 'estado', 'ciudad', 'calle']
+            respuesta_herramienta = buscar_por_valor_en_campos_similares(valor_extraido, posibles_campos, carpeta_indices=ruta_indices)
 
-        print(f"\nSalida de la herramienta:\n{respuesta_herramienta}\n")
+            if "No se encontraron coincidencias" in respuesta_herramienta:
+                respuesta_herramienta = buscar_en_todos_los_indices(prompt)
+
+        # ✅ Mostrar el resultado al usuario
+        print(f"\n📄 Resultado:\n{respuesta_herramienta}\n")
 
     except Exception as e:
         print(f"❌ Ocurrió un error durante la ejecución del agente: {e}")
-
 
 # Limpiar memoria al salir
 del llm, embed_model, agent, all_tools, indices
