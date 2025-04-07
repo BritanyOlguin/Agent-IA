@@ -19,35 +19,30 @@ from utils import normalizar_texto
 import re
 
 def detectar_campo_y_valor(prompt: str):
-    campos_clave = {
-        "telefono": ["telefono", "teléfono", "tel"],
-        "tarjeta": ["tarjeta"],
-        "direccion": ["direccion", "dirección", "calle"],
-        "cp": ["cp", "código postal", "codigo postal"],
-        "colonia": ["colonia"],
-        "estado": ["estado"],
-        "municipio": ["municipio"],
-        "nombre_completo": ["nombre", "nombre completo"],
-    }
-
     prompt_lower = prompt.lower()
 
-    for campo, aliases in campos_clave.items():
-        for alias in aliases:
-            if alias in prompt_lower:
-                # Intentar extraer valor que venga después de la palabra clave
-                pattern = re.compile(rf"{alias}\s*(es|:)?\s*([\w\d\s\-.,]+)", re.IGNORECASE)
-                match = pattern.search(prompt)
-                if match:
-                    valor = match.group(2).strip()
-                    return campo, valor
+    # Ordena los campos por longitud de alias descendente para evitar capturar 'numero' antes que 'numero de tarjeta'
+    aliases_ordenados = sorted([
+        (campo_estandarizado, alias)
+        for campo_estandarizado, alias_list in campos_clave.items()
+        for alias in alias_list
+    ], key=lambda x: -len(x[1]))  # ordenar por longitud del alias (más largo primero)
 
-                # Si no hay patrón claro, intenta extraer un número/tarjeta en general
-                numeros = re.findall(r"\d{7,}", prompt)  # Para detectar teléfono o tarjeta
-                if numeros:
-                    return campo, numeros[0]
+    for campo_estandarizado, alias in aliases_ordenados:
+        if alias in prompt_lower:
+            # buscar con regex si hay valor después del alias
+            pattern = re.compile(rf"{alias}\s*(es|:)?\s*([\w\d\s\-.,]+)", re.IGNORECASE)
+            match = pattern.search(prompt)
+            if match:
+                valor = match.group(2).strip()
+                return campo_estandarizado, valor
 
-    return None, None  # Si no se detecta campo específico
+            # si no encuentra valor explícito, busca un número largo (teléfono o tarjeta)
+            numeros = re.findall(r"\d{7,}", prompt)
+            if numeros:
+                return campo_estandarizado, numeros[0]
+
+    return None, None
 
 def similitud(texto1, texto2):
     return SequenceMatcher(None, texto1, texto2).ratio()
@@ -147,6 +142,59 @@ for nombre_dir in os.listdir(ruta_indices):
 
     except Exception as e:
         print(f"❌ Error al cargar índice {ruta_indice}: {e}")
+
+# -----------------------------
+# 🔍 DETECTAR CAMPOS DISPONIBLES DESDE LOS ÍNDICES
+# -----------------------------
+campos_detectados = set()
+
+for nombre_dir in os.listdir(ruta_indices):
+    ruta_indice = os.path.join(ruta_indices, nombre_dir)
+    if not os.path.isdir(ruta_indice) or not os.path.exists(os.path.join(ruta_indice, "docstore.json")):
+        continue
+
+    try:
+        storage_context = StorageContext.from_defaults(persist_dir=ruta_indice)
+        index = load_index_from_storage(storage_context)
+        for node_id, doc in index.docstore.docs.items():
+            metadata = doc.metadata
+            if metadata:
+                campos_detectados.update(metadata.keys())
+            break  # solo necesitamos uno por índice
+
+    except Exception as e:
+        print(f"⚠️ Error al explorar metadatos en {nombre_dir}: {e}")
+        continue
+
+# 🔧 Alias comunes para mapear variaciones a campos clave
+alias_comunes = {
+    "telefono": ["telefono", "teléfono", "tel"],
+    "tarjeta": ["tarjeta"],
+    "direccion": ["direccion", "dirección", "calle"],
+    "cp": ["cp", "código postal", "codigo postal"],
+    "colonia": ["colonia"],
+    "estado": ["estado"],
+    "municipio": ["municipio"],
+    "nombre_completo": ["nombre", "nombre completo"],
+}
+
+# 🧠 Construir `mapa_campos` y `campos_clave` automáticamente
+mapa_campos = {}
+campos_clave = {}
+
+for campo in campos_detectados:
+    coincidencia = None
+    for base, variantes in alias_comunes.items():
+        if campo in [normalizar_texto(alias) for alias in variantes] or base in campo.lower():
+            coincidencia = base
+            break
+    if coincidencia:
+        mapa_campos[campo] = coincidencia
+        campos_clave.setdefault(coincidencia, []).append(campo)
+    else:
+        mapa_campos[campo] = campo
+        campos_clave.setdefault(campo, []).append(campo)
+
         
 # Herramienta 1: Búsqueda Semántica Global Mejorada
 def buscar_en_todos_los_indices(query: str) -> str:
@@ -228,22 +276,10 @@ def buscar_por_atributo_en_indices(campo: str, valor: str, carpeta_indices: str)
     print(f"\n🔍 Buscando registros donde '{campo}' = '{valor}'\n")
 
     # Mapa para alias de campos comunes
-    mapa_campos = {
-        "telefono": "telefono",
-        "tel": "telefono",
-        "teléfono": "telefono",
-        "direccion": "direccion",
-        "dirección": "direccion",
-        "estado": "estado",
-        "municipio": "municipio",
-        "colonia": "colonia",
-        "tarjeta": "tarjeta",
-        "cp": "cp",
-        "código postal": "cp",
-        "codigo postal": "cp",
-        "nombre completo": "nombre_completo",
-        "nombre": "nombre_completo",
-    }
+    # usa mapa_campos ya generado dinámicamente arriba
+    campo_normalizado = normalizar_texto(campo)
+    campo_final = mapa_campos.get(campo_normalizado, campo_normalizado)
+
 
     campo_normalizado = normalizar_texto(campo)
     campo_final = mapa_campos.get(campo_normalizado, campo_normalizado)
