@@ -18,6 +18,82 @@ sys.path.append(r"C:\Users\Sistemas\Documents\OKIP\src")
 from utils import normalizar_texto
 import re
 
+def sugerir_campos_para_valor(valor: str, campos_disponibles: list[str]) -> list[str]:
+    """
+    Dado un valor, sugiere los campos donde probablemente podría estar.
+    Si es numérico largo, prioriza teléfono, tarjeta, etc.
+    Si es texto, busca campos tipo dirección, municipio, etc.
+    """
+    valor = valor.strip()
+    campos_probables = []
+
+    if valor.isdigit() and len(valor) >= 7:
+        # Posible teléfono, tarjeta, número
+        claves = ['telefono', 'numero', 'tarjeta', 'fecha afiliacion', 'codigo postal', 'lada']
+    elif any(c.isdigit() for c in valor) and any(c.isalpha() for c in valor):
+        # Alfanumérico tipo dirección
+        claves = ['direccion', 'calle', 'colonia', 'cp', 'sector', 'entidad', 'clave ife', 'domicilio', 'numero']
+    else:
+        # Solo texto: puede ser municipio, colonia, ciudad, estado
+        claves = ['municipio', 'colonia', 'ciudad', 'estado', 'localidad', 'edo de origen', 'sexo', 'ocupacion', ]
+
+    for campo in campos_disponibles:
+        campo_norm = normalizar_texto(campo)
+        if any(clave in campo_norm for clave in claves):
+            campos_probables.append(campo)
+
+    # Agrega un fallback si no encontró nada
+    if not campos_probables:
+        campos_probables = campos_disponibles
+
+    return campos_probables
+
+def buscar_en_campos_inteligente(valor: str, carpeta_indices: str, campos_ordenados=None) -> str:
+    print(f"\n🔍 Búsqueda progresiva por campo para valor: '{valor}'")
+    valor_normalizado = normalizar_texto(valor)
+    resultados = []
+
+    # Si no se pasa una lista personalizada, usar los campos más comunes primero
+    if campos_ordenados is None:
+        campos_ordenados = ['municipio', 'colonia', 'direccion', 'estado', 'calle', 'ciudad', 'cp', 'sector']
+
+    for campo in campos_ordenados:
+        campo_variantes = campos_clave.get(campo, [campo])
+
+        for variante in campo_variantes:
+            key = normalizar_texto(variante)
+
+            for nombre_dir in os.listdir(carpeta_indices):
+                ruta_indice = os.path.join(carpeta_indices, nombre_dir)
+                if not os.path.isdir(ruta_indice) or not os.path.exists(os.path.join(ruta_indice, "docstore.json")):
+                    continue
+
+                fuente = nombre_dir.replace("index_", "")
+                try:
+                    storage_context = StorageContext.from_defaults(persist_dir=ruta_indice)
+                    index = load_index_from_storage(storage_context)
+
+                    filters = MetadataFilters(filters=[
+                        ExactMatchFilter(key=key, value=valor_normalizado)
+                    ])
+                    retriever = VectorIndexRetriever(index=index, similarity_top_k=5, filters=filters)
+                    nodes = retriever.retrieve(f"{campo} es {valor}")
+
+                    if nodes:
+                        for node in nodes:
+                            metadata = node.node.metadata
+                            resumen = [f"{k}: {v}" for k, v in metadata.items() if k not in ['fuente', 'archivo', 'fila_excel'] and v]
+                            resultados.append(f"✅ Coincidencia en {fuente} (campo '{campo}'):\n" + "\n".join(resumen))
+
+                        # 💡 Si encontró resultados, no sigas buscando
+                        return "\n".join(resultados)
+
+                except Exception as e:
+                    print(f"⚠️ Error buscando en {fuente}: {e}")
+                    continue
+
+    return f"❌ No se encontraron coincidencias relevantes para el valor '{valor}' en campos comunes."
+
 def extraer_valor_desde_pregunta(prompt: str) -> str:
     """
     Extrae un valor probable desde la pregunta, eliminando verbos como 'vive en', 'está en', etc.
@@ -409,7 +485,7 @@ try:
     agent = ReActAgent.from_tools(
         tools=all_tools,
         llm=llm,
-        verbose=True  # Muestra los pasos de pensamiento del agente
+        verbose=False  # Muestra los pasos de pensamiento del agente
     )
     print("✅ Agente creado correctamente.")
 except Exception as e:
@@ -433,8 +509,9 @@ while True:
             respuesta_herramienta = buscar_por_atributo_en_indices(campo, valor, carpeta_indices=ruta_indices)
         else:
             valor_extraido = extraer_valor_desde_pregunta(prompt)
-            posibles_campos = ['direccion', 'colonia', 'municipio', 'estado', 'ciudad', 'calle']
-            respuesta_herramienta = buscar_por_valor_en_campos_similares(valor_extraido, posibles_campos, carpeta_indices=ruta_indices)
+            campos_disponibles = list(campos_detectados)  # viene de tu análisis dinámico
+            campos_probables = sugerir_campos_para_valor(valor_extraido, campos_disponibles)
+            respuesta_herramienta = buscar_en_campos_inteligente(valor_extraido, carpeta_indices=ruta_indices, campos_ordenados=campos_probables)
 
             if "No se encontraron coincidencias" in respuesta_herramienta:
                 respuesta_herramienta = buscar_en_todos_los_indices(prompt)
