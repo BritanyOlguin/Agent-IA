@@ -12,6 +12,7 @@ from llama_index.core.settings import Settings
 import unicodedata
 import re
 import sys
+# Importar la función normalizar_texto desde utils.py
 sys.path.append(r"C:\Users\Sistemas\Documents\OKIP\src")
 from utils import normalizar_texto
 

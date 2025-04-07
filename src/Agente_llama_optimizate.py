@@ -14,11 +14,106 @@ from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter
 from llama_index.core.retrievers import VectorIndexRetriever
 from llama_index.core import StorageContext, load_index_from_storage
 import sys
+# Importar la función normalizar_texto desde utils.py
 sys.path.append(r"C:\Users\Sistemas\Documents\OKIP\src")
 from utils import normalizar_texto
 import re
 
-def sugerir_campos_para_valor(valor: str, campos_disponibles: list[str]) -> list[str]:
+# --- 1) CONFIGURACIÓN ---
+ruta_modelo_embeddings = r"C:\Users\Sistemas\Documents\OKIP\models\models--intfloat--e5-large-v2"
+ruta_indices = r"C:\Users\Sistemas\Documents\OKIP\llama_index_indices"
+ruta_modelo_llama3 = r"C:\Users\Sistemas\Documents\OKIP\models\models--meta-llama--Meta-Llama-3-8B-Instruct"
+
+# CONFIGURACIÓN DE DISPOSITIVO Y LLM
+device = "cuda" if torch.cuda.is_available() else "cpu"
+if device == "cpu":
+    print("⚠️ Advertencia: Usando CPU para LLM. Las respuestas serán lentas.")
+else:
+    print(f"Usando dispositivo para LLM y Embeddings: {device}")
+
+# --- CARGAR MODELO Y TOKENIZER CON TRANSFORMERS ---
+print(f" Cargando Tokenizer y Modelo Llama 3 desde: {ruta_modelo_llama3}")
+try:
+    tokenizer = AutoTokenizer.from_pretrained(
+        ruta_modelo_llama3,
+        local_files_only=True
+    )
+    print("Tokenizer cargado.")
+
+    model = AutoModelForCausalLM.from_pretrained(
+        ruta_modelo_llama3,
+        torch_dtype=torch.float16,  # MENOR USO DE VRAM
+        load_in_8bit=True,
+        device_map="auto",  # QUE TRANSFORMERS DISTRIBUYA EN LA GPU
+        local_files_only=True
+    )
+    print("Modelo LLM Llama 3 cargado en dispositivo.")
+
+except Exception as e:
+    print(f"Error al cargar Llama 3 desde {ruta_modelo_llama3}: {e}")
+    exit()
+
+# --- CONFIGURAR HuggingFaceLLM ---
+try:
+    llm = HuggingFaceLLM(
+        model=model,
+        tokenizer=tokenizer,
+        context_window=8000,
+        max_new_tokens=512,
+        generate_kwargs={"temperature": 0.1, "do_sample": False},
+    )
+    print("HuggingFaceLLM configurado con modelo Llama 3 cargado.")
+except Exception as e:
+    print(f"Error al configurar HuggingFaceLLM con modelo pre-cargado: {e}")
+    exit()
+
+# CONFIGURAR Modelo de Embeddings
+print(f"Cargando modelo de embeddings: {os.path.basename(ruta_modelo_embeddings)}")
+try:
+    embed_model = HuggingFaceEmbedding(
+        model_name=ruta_modelo_embeddings,
+        device=device,
+        normalize=True
+    )
+    print("Modelo de embeddings e5-large-v2 cargado.")
+except Exception as e:
+    print(f"Error cargando el modelo de embeddings desde {ruta_modelo_embeddings}: {e}")
+    exit()
+
+# APLICAR CONFIGURACIÓN LLAMAINDEX
+Settings.llm = llm
+Settings.embed_model = embed_model
+
+# --- 2) CARGAR TODOS LOS ÍNDICES ---
+all_tools = []
+indices = {}  # ALMACENAR LOS ÍNDICES CARGADOS
+
+print(f"\nBuscando índices en: {ruta_indices}")
+for nombre_dir in os.listdir(ruta_indices):
+    ruta_indice = os.path.join(ruta_indices, nombre_dir)
+    if not os.path.isdir(ruta_indice):
+        continue
+    if not os.path.exists(os.path.join(ruta_indice, "docstore.json")):
+        print(f"No contiene índice válido.")
+        continue
+
+    fuente = nombre_dir.replace("index_", "")  # EXTRAER EL NOMBRE DE LA FUENTE
+
+    try:
+        print(f"Cargando índice para fuente: {fuente}")
+        storage_context = StorageContext.from_defaults(persist_dir=ruta_indice)
+        index = load_index_from_storage(storage_context)
+        indices[fuente] = index
+
+        retriever = VectorIndexRetriever(index=index, similarity_top_k=3)
+        query_engine = index.as_query_engine(streaming=False)
+
+    except Exception as e:
+        print(f"Error al cargar índice {ruta_indice}: {e}")
+
+
+# POSIBLES CAMPOS A BUSCAR
+def sugerir_campos(valor: str, campos_disponibles: list[str]) -> list[str]:
     """
     Dado un valor, sugiere los campos donde probablemente podría estar.
     Si es numérico largo, prioriza teléfono, tarjeta, etc.
@@ -28,13 +123,13 @@ def sugerir_campos_para_valor(valor: str, campos_disponibles: list[str]) -> list
     campos_probables = []
 
     if valor.isdigit() and len(valor) >= 7:
-        # Posible teléfono, tarjeta, número
+        # TELÉFONO, TARJETA, NÚMERO
         claves = ['telefono', 'numero', 'tarjeta', 'fecha afiliacion', 'codigo postal', 'lada']
     elif any(c.isdigit() for c in valor) and any(c.isalpha() for c in valor):
-        # Alfanumérico tipo dirección
+        # ALFANUMÉRICO TIPO DIRECCIÓN
         claves = ['direccion', 'calle', 'colonia', 'cp', 'sector', 'entidad', 'clave ife', 'domicilio', 'numero']
     else:
-        # Solo texto: puede ser municipio, colonia, ciudad, estado
+        # SOLO TEXTO: MUNICIPIO, COLONIA, CIUDAD, ESTADO
         claves = ['municipio', 'colonia', 'ciudad', 'estado', 'localidad', 'edo de origen', 'sexo', 'ocupacion', ]
 
     for campo in campos_disponibles:
@@ -42,18 +137,16 @@ def sugerir_campos_para_valor(valor: str, campos_disponibles: list[str]) -> list
         if any(clave in campo_norm for clave in claves):
             campos_probables.append(campo)
 
-    # Agrega un fallback si no encontró nada
     if not campos_probables:
         campos_probables = campos_disponibles
 
     return campos_probables
 
-def buscar_en_campos_inteligente(valor: str, carpeta_indices: str, campos_ordenados=None) -> str:
-    print(f"\n🔍 Búsqueda progresiva por campo para valor: '{valor}'")
+def buscar_campos_inteligente(valor: str, carpeta_indices: str, campos_ordenados=None) -> str:
+    print(f"\nBúsqueda para valor: '{valor}'")
     valor_normalizado = normalizar_texto(valor)
     resultados = []
 
-    # Si no se pasa una lista personalizada, usar los campos más comunes primero
     if campos_ordenados is None:
         campos_ordenados = ['municipio', 'colonia', 'direccion', 'estado', 'calle', 'ciudad', 'cp', 'sector']
 
@@ -83,29 +176,26 @@ def buscar_en_campos_inteligente(valor: str, carpeta_indices: str, campos_ordena
                         for node in nodes:
                             metadata = node.node.metadata
                             resumen = [f"{k}: {v}" for k, v in metadata.items() if k not in ['fuente', 'archivo', 'fila_excel'] and v]
-                            resultados.append(f"✅ Coincidencia en {fuente} (campo '{campo}'):\n" + "\n".join(resumen))
+                            resultados.append(f"Coincidencia en {fuente}:\n" + "\n".join(resumen))
 
-                        # 💡 Si encontró resultados, no sigas buscando
                         return "\n".join(resultados)
 
                 except Exception as e:
-                    print(f"⚠️ Error buscando en {fuente}: {e}")
+                    print(f"Error buscando en {fuente}: {e}")
                     continue
 
-    return f"❌ No se encontraron coincidencias relevantes para el valor '{valor}' en campos comunes."
+    return f"No se encontraron coincidencias relevantes para el valor '{valor}'."
 
-def extraer_valor_desde_pregunta(prompt: str) -> str:
+def extraer_valor(prompt: str) -> str:
     """
     Extrae un valor probable desde la pregunta, eliminando verbos como 'vive en', 'está en', etc.
     """
     prompt = prompt.strip().lower()
 
-    # Extraer número si existe
     numeros = re.findall(r"\d{7,}", prompt)
     if numeros:
         return numeros[0]
 
-    # Frases comunes para buscar ubicación o valor
     frases_clave = [
         r"quien vive en\s+([a-zA-ZáéíóúñÑ0-9\s\-]+)",
         r"vive en\s+([a-zA-ZáéíóúñÑ0-9\s\-]+)",
@@ -119,41 +209,38 @@ def extraer_valor_desde_pregunta(prompt: str) -> str:
         if match:
             return match.group(1).strip()
 
-    # Último recurso: devolver última palabra
     palabras = prompt.split()
     if palabras:
         return palabras[-1]
     return prompt
 
 
-def detectar_campo_y_valor(prompt: str):
+def detectar_campo_valor(prompt: str):
     prompt_lower = prompt.lower()
 
-    # Ordena los campos por longitud de alias descendente para evitar capturar 'numero' antes que 'numero de tarjeta'
     aliases_ordenados = sorted([
         (campo_estandarizado, alias)
         for campo_estandarizado, alias_list in campos_clave.items()
         for alias in alias_list
-    ], key=lambda x: -len(x[1]))  # ordenar por longitud del alias (más largo primero)
+    ], key=lambda x: -len(x[1]))
 
     for campo_estandarizado, alias in aliases_ordenados:
         if alias in prompt_lower:
-            # buscar con regex si hay valor después del alias
+
             pattern = re.compile(rf"{alias}\s*(es|:)?\s*([\w\d\s\-.,]+)", re.IGNORECASE)
             match = pattern.search(prompt)
             if match:
                 valor = match.group(2).strip()
                 return campo_estandarizado, valor
 
-            # si no encuentra valor explícito, busca un número largo (teléfono o tarjeta)
             numeros = re.findall(r"\d{7,}", prompt)
             if numeros:
                 return campo_estandarizado, numeros[0]
 
     return None, None
 
-def buscar_por_valor_en_campos_similares(valor: str, campos: list[str], carpeta_indices: str) -> str:
-    print(f"\n🔍 Buscando registros donde algún campo contiene '{valor}' (búsqueda ampliada)\n")
+def buscar_campos_similares(valor: str, campos: list[str], carpeta_indices: str) -> str:
+    print(f"\nBuscando registros...\n")
     valor_normalizado = normalizar_texto(valor)
     resultados = []
 
@@ -180,118 +267,20 @@ def buscar_por_valor_en_campos_similares(valor: str, campos: list[str], carpeta_
                     for node in nodes:
                         metadata = node.node.metadata
                         resumen = [f"{k}: {v}" for k, v in metadata.items() if k not in ['fuente', 'archivo', 'fila_excel'] and v]
-                        resultados.append(f"✅ Coincidencia en {fuente} (campo '{campo}'):\n" + "\n".join(resumen))
+                        resultados.append(f"Coincidencia en {fuente}:\n" + "\n".join(resumen))
             except Exception as e:
-                print(f"⚠️ Error buscando en {fuente}: {e}")
+                print(f"Error buscando en {fuente}: {e}")
                 continue
 
     if resultados:
         return "\n".join(resultados)
     else:
-        return f"❌ No se encontraron coincidencias en los campos {campos} para el valor '{valor}'."
+        return f"No se encontraron coincidencias para el valor '{valor}'."
 
 def similitud(texto1, texto2):
     return SequenceMatcher(None, texto1, texto2).ratio()
 
-# --- 1) CONFIGURACIÓN ---
-ruta_modelo_embeddings = r"C:\Users\Sistemas\Documents\OKIP\models\models--intfloat--e5-large-v2"
-ruta_indices = r"C:\Users\Sistemas\Documents\OKIP\llama_index_indices"
-ruta_modelo_llama3 = r"C:\Users\Sistemas\Documents\OKIP\models\models--meta-llama--Meta-Llama-3-8B-Instruct"
-
-# Configuración de Dispositivo y LLM
-device = "cuda" if torch.cuda.is_available() else "cpu"
-if device == "cpu":
-    print("⚠️ Advertencia: Usando CPU para LLM. Las respuestas serán lentas.")
-else:
-    print(f"💻 Usando dispositivo para LLM y Embeddings: {device}")
-
-# --- CARGAR MODELO Y TOKENIZER CON TRANSFORMERS ---
-print(f" Cargando Tokenizer y Modelo Llama 3 desde: {ruta_modelo_llama3}")
-try:
-    tokenizer = AutoTokenizer.from_pretrained(
-        ruta_modelo_llama3,
-        local_files_only=True  # Los archivos ya están descargados localmente
-    )
-    print("✅ Tokenizer cargado.")
-
-    model = AutoModelForCausalLM.from_pretrained(
-        ruta_modelo_llama3,
-        torch_dtype=torch.float16,  # Menor uso de VRAM
-        load_in_8bit=True,  # Cargar en 8 bits
-        device_map="auto",  # Dejar que transformers distribuya en la GPU
-        local_files_only=True
-    )
-    print("✅ Modelo LLM Llama 3 cargado en dispositivo.")
-
-except Exception as e:
-    print(f"❌ Error al cargar Llama 3 desde {ruta_modelo_llama3}: {e}")
-    print(
-        " Asegúrate de que la ruta es correcta, el modelo está descargado, aceptaste los términos y tienes bitsandbytes instalado si usas load_in_8bit=True."
-    )
-    exit()
-
-# --- CONFIGURAR HuggingFaceLLM USANDO OBJETOS CARGADOS ---
-try:
-    llm = HuggingFaceLLM(
-        model=model,
-        tokenizer=tokenizer,
-        context_window=8000,  # Llama 3 tiene ventana de 8k, ajusta si es necesario
-        max_new_tokens=512,
-        generate_kwargs={"temperature": 0.1, "do_sample": False},
-    )
-    print("✅ HuggingFaceLLM configurado con modelo Llama 3 cargado.")
-except Exception as e:
-    print(f"❌ Error al configurar HuggingFaceLLM con modelo pre-cargado: {e}")
-    exit()
-
-# Configurar Modelo de Embeddings (sin cambios)
-print(f"⚙️ Cargando modelo de embeddings: {os.path.basename(ruta_modelo_embeddings)}")
-try:
-    # Asegúrate que coincida con la configuración del script de indexación
-    embed_model = HuggingFaceEmbedding(
-        model_name=ruta_modelo_embeddings,
-        device=device,
-        normalize=True  # Mantener True si lo usaste al indexar
-    )
-    print("✅ Modelo de embeddings e5-large-v2 cargado.")
-except Exception as e:
-    print(f"❌ Error cargando el modelo de embeddings desde {ruta_modelo_embeddings}: {e}")
-    exit()
-
-# Aplicar configuración global a LlamaIndex (sin cambios)
-Settings.llm = llm
-Settings.embed_model = embed_model
-
-# --- 2) CARGAR TODOS LOS ÍNDICES DE LA CARPETA DE ÍNDICES ---
-all_tools = []
-indices = {}  # Diccionario para almacenar los índices cargados
-
-print(f"\n🔎 Buscando índices en: {ruta_indices}")
-for nombre_dir in os.listdir(ruta_indices):
-    ruta_indice = os.path.join(ruta_indices, nombre_dir)
-    if not os.path.isdir(ruta_indice):
-        continue
-    if not os.path.exists(os.path.join(ruta_indice, "docstore.json")):
-        print(f"⚠️ Saltando {ruta_indice}, no contiene índice válido.")
-        continue
-
-    fuente = nombre_dir.replace("index_", "")  # Extraer el nombre de la fuente
-
-    try:
-        print(f"📂 Cargando índice para fuente: {fuente}")
-        storage_context = StorageContext.from_defaults(persist_dir=ruta_indice)
-        index = load_index_from_storage(storage_context)
-        indices[fuente] = index  # Almacenar el índice en el diccionario
-
-        retriever = VectorIndexRetriever(index=index, similarity_top_k=3)
-        query_engine = index.as_query_engine(streaming=False)
-
-    except Exception as e:
-        print(f"❌ Error al cargar índice {ruta_indice}: {e}")
-
-# -----------------------------
-# 🔍 DETECTAR CAMPOS DISPONIBLES DESDE LOS ÍNDICES
-# -----------------------------
+# CAMPOS DISPONIBLES
 campos_detectados = set()
 
 for nombre_dir in os.listdir(ruta_indices):
@@ -306,13 +295,13 @@ for nombre_dir in os.listdir(ruta_indices):
             metadata = doc.metadata
             if metadata:
                 campos_detectados.update(metadata.keys())
-            break  # solo necesitamos uno por índice
+            break
 
     except Exception as e:
-        print(f"⚠️ Error al explorar metadatos en {nombre_dir}: {e}")
+        print(f"Error al explorar metadatos en {nombre_dir}: {e}")
         continue
 
-# 🔧 Alias comunes para mapear variaciones a campos clave
+# ALIAS COMUNES
 alias_comunes = {
     "telefono": ["telefono", "teléfono", "tel"],
     "tarjeta": ["tarjeta"],
@@ -324,7 +313,7 @@ alias_comunes = {
     "nombre_completo": ["nombre", "nombre completo"],
 }
 
-# 🧠 Construir `mapa_campos` y `campos_clave` automáticamente
+# CONSTRUIR `mapa_campos` Y `campos_clave` AUTOMÁTICAMENTE
 mapa_campos = {}
 campos_clave = {}
 
@@ -341,10 +330,9 @@ for campo in campos_detectados:
         mapa_campos[campo] = campo
         campos_clave.setdefault(campo, []).append(campo)
 
-        
-# Herramienta 1: Búsqueda Semántica Global Mejorada
-def buscar_en_todos_los_indices(query: str) -> str:
-    print(f"⚙️ Ejecutando búsqueda semántica global mejorada: '{query}'")
+# --- 3) HERRAMIENTA 1: BUSCAR POR NOMBRE COMPLETO ---
+def buscar_nombre(query: str) -> str:
+    print(f"Ejecutando búsqueda de nombre: '{query}'")
     resultados_exactos = []
     resultados_top_1 = []
     query_upper = query.strip().upper()
@@ -368,11 +356,11 @@ def buscar_en_todos_los_indices(query: str) -> str:
             if normalizar(nombre_metadata) == normalizar(query_upper) and fuente not in ya_guardados:
                 resumen = [f"{k}: {v}" for k, v in metadata.items() if k not in ['fuente', 'archivo', 'fila_excel'] and v]
                 resultados_exactos.append(
-                    f"✅ Coincidencia exacta en {fuente}:\n" + "\n".join(resumen)
+                    f"Coincidencia exacta en {fuente}:\n" + "\n".join(resumen)
                 )
                 ya_guardados.add(fuente)
 
-        # Si no hay exacto, guardar las mejores coincidencias con similitud >= 0.9
+        # GUARDAR LAS MEJORES COINCIDENCIAS
         for node in nodes:
             metadata = node.node.metadata
             nombre_metadata = (
@@ -392,19 +380,19 @@ def buscar_en_todos_los_indices(query: str) -> str:
 
 
     if resultados_exactos:
-        respuesta_final = "✅ Se encontraron estas coincidencias exactas en los archivos:\n\n" + "\n\n".join(resultados_exactos)
+        respuesta_final = "Se encontraron estas coincidencias exactas en los archivos:\n\n" + "\n\n".join(resultados_exactos)
         return respuesta_final
 
     elif resultados_top_1:
-        return "✅ Se encontraron estas coincidencias:\n\n" + "\n\n".join(resultados_top_1)
+        return "Se encontraron estas coincidencias:\n\n" + "\n\n".join(resultados_top_1)
 
     else:
-        return "❌ No se encontraron resultados relevantes en ninguna fuente."
+        return "No se encontraron resultados relevantes en ninguna fuente."
 
     
 busqueda_global_tool = FunctionTool.from_defaults(
-    fn=buscar_en_todos_los_indices,
-    name="busqueda_semantica_en_todos_los_indices",
+    fn=buscar_nombre,
+    name="buscar_nombre",
     description=(
         "Usa esta herramienta para encontrar información completa de una persona en todas las bases, "
         "cuando el usuario da el nombre completo. Por ejemplo: 'Dame la información de Juan Pérez', "
@@ -413,19 +401,16 @@ busqueda_global_tool = FunctionTool.from_defaults(
 )
 all_tools.insert(0, busqueda_global_tool)
 
-# Herramienta 3: Buscar personas por atributo específico (Campo y Valor)
-def buscar_por_atributo_en_indices(campo: str, valor: str, carpeta_indices: str) -> str:
+# --- 4) HERRAMIENTA 2: BUSCAR PERSONAS POR ATRIBUTO ---
+def buscar_atributo(campo: str, valor: str, carpeta_indices: str) -> str:
     """
     Busca coincidencias exactas por campo y valor en todos los índices dentro de la carpeta dada.
     Aplica normalización para coincidir con los metadatos indexados.
     """
-    print(f"\n🔍 Buscando registros donde '{campo}' = '{valor}'\n")
+    print(f"\nBuscando registros donde '{campo}' = '{valor}'\n")
 
-    # Mapa para alias de campos comunes
-    # usa mapa_campos ya generado dinámicamente arriba
     campo_normalizado = normalizar_texto(campo)
     campo_final = mapa_campos.get(campo_normalizado, campo_normalizado)
-
 
     campo_normalizado = normalizar_texto(campo)
     campo_final = mapa_campos.get(campo_normalizado, campo_normalizado)
@@ -454,20 +439,19 @@ def buscar_por_atributo_en_indices(campo: str, valor: str, carpeta_indices: str)
                 for node in nodes:
                     metadata = node.node.metadata
                     resumen = [f"{k}: {v}" for k, v in metadata.items() if k not in ['fuente', 'archivo', 'fila_excel'] and v]
-                    resultados.append(f"✅ Coincidencia en {fuente}:\n" + "\n".join(resumen))
+                    resultados.append(f"Coincidencia en {fuente}:\n" + "\n".join(resumen))
         except Exception as e:
-            print(f"⚠️ Error al buscar en {fuente}: {e}")
+            print(f"Error al buscar en {fuente}: {e}")
             continue
 
     if resultados:
         return "\n".join(resultados)
     else:
-        return f"❌ No se encontraron coincidencias para '{campo}: {valor}' en los índices."
-    
-# Envolver la función con la ruta real de índices
+        return f"No se encontraron coincidencias para '{campo}: {valor}'"
+
 buscar_por_atributo_tool = FunctionTool.from_defaults(
-    fn=lambda campo, valor: buscar_por_atributo_en_indices(campo, valor, carpeta_indices=ruta_indices),
-    name="buscar_por_atributo_en_indices",
+    fn=lambda campo, valor: buscar_atributo(campo, valor, carpeta_indices=ruta_indices),
+    name="buscar_atributo",
     description=(
         "Usa esta herramienta cuando el usuario pregunta por un campo específico como teléfono, dirección, estado, tarjeta, etc. "
         "Por ejemplo: '¿Quién tiene el número 5544332211?', '¿Quién vive en Malva 101?', '¿Quién tiene la tarjeta terminación 8841?', "
@@ -476,25 +460,23 @@ buscar_por_atributo_tool = FunctionTool.from_defaults(
 )
 all_tools.insert(1, buscar_por_atributo_tool)
 
+# --- 5) CREAR Y EJECUTAR EL AGENTE ---
 
-
-# --- 4) CREAR Y EJECUTAR EL AGENTE ---
-
-# Crear el agente ReAct (que razona y actúa)
+# CREAR EL AGENTE REACT
 try:
     agent = ReActAgent.from_tools(
         tools=all_tools,
         llm=llm,
-        verbose=False  # Muestra los pasos de pensamiento del agente
+        verbose=False  # MUESTRA LOS PASOS DE PENSAMIENTO DEL AGENTE
     )
-    print("✅ Agente creado correctamente.")
+    print("Agente creado correctamente.")
 except Exception as e:
-    print(f"❌ Error al crear el agente: {e}")
+    print(f"Error al crear el agente: {e}")
     exit()
 
 print("\n🤖 Agente listo. Escribe tu pregunta o 'salir' para terminar.")
 
-# Ciclo de chat
+# CICLO DE CHAT
 while True:
     prompt = input("Pregunta: ")
     if prompt.lower() == 'salir':
@@ -503,26 +485,25 @@ while True:
         continue
 
     try:
-        campo, valor = detectar_campo_y_valor(prompt)
+        campo, valor = detectar_campo_valor(prompt)
 
         if campo and valor:
-            respuesta_herramienta = buscar_por_atributo_en_indices(campo, valor, carpeta_indices=ruta_indices)
+            respuesta_herramienta = buscar_atributo(campo, valor, carpeta_indices=ruta_indices)
         else:
-            valor_extraido = extraer_valor_desde_pregunta(prompt)
-            campos_disponibles = list(campos_detectados)  # viene de tu análisis dinámico
-            campos_probables = sugerir_campos_para_valor(valor_extraido, campos_disponibles)
-            respuesta_herramienta = buscar_en_campos_inteligente(valor_extraido, carpeta_indices=ruta_indices, campos_ordenados=campos_probables)
+            valor_extraido = extraer_valor(prompt)
+            campos_disponibles = list(campos_detectados)
+            campos_probables = sugerir_campos(valor_extraido, campos_disponibles)
+            respuesta_herramienta = buscar_campos_inteligente(valor_extraido, carpeta_indices=ruta_indices, campos_ordenados=campos_probables)
 
             if "No se encontraron coincidencias" in respuesta_herramienta:
-                respuesta_herramienta = buscar_en_todos_los_indices(prompt)
+                respuesta_herramienta = buscar_nombre(prompt)
 
-        # ✅ Mostrar el resultado al usuario
-        print(f"\n📄 Resultado:\n{respuesta_herramienta}\n")
+        print(f"\n📄Resultado:\n{respuesta_herramienta}\n")
 
     except Exception as e:
         print(f"❌ Ocurrió un error durante la ejecución del agente: {e}")
 
-# Limpiar memoria al salir
+# LIMPIAR MEMORIA AL SALIR
 del llm, embed_model, agent, all_tools, indices
 if device == "cuda":
     torch.cuda.empty_cache()
