@@ -16,6 +16,38 @@ from llama_index.core import StorageContext, load_index_from_storage
 import sys
 sys.path.append(r"C:\Users\Sistemas\Documents\OKIP\src")
 from utils import normalizar_texto
+import re
+
+def detectar_campo_y_valor(prompt: str):
+    campos_clave = {
+        "telefono": ["telefono", "teléfono", "tel"],
+        "tarjeta": ["tarjeta"],
+        "direccion": ["direccion", "dirección", "calle"],
+        "cp": ["cp", "código postal", "codigo postal"],
+        "colonia": ["colonia"],
+        "estado": ["estado"],
+        "municipio": ["municipio"],
+        "nombre_completo": ["nombre", "nombre completo"],
+    }
+
+    prompt_lower = prompt.lower()
+
+    for campo, aliases in campos_clave.items():
+        for alias in aliases:
+            if alias in prompt_lower:
+                # Intentar extraer valor que venga después de la palabra clave
+                pattern = re.compile(rf"{alias}\s*(es|:)?\s*([\w\d\s\-.,]+)", re.IGNORECASE)
+                match = pattern.search(prompt)
+                if match:
+                    valor = match.group(2).strip()
+                    return campo, valor
+
+                # Si no hay patrón claro, intenta extraer un número/tarjeta en general
+                numeros = re.findall(r"\d{7,}", prompt)  # Para detectar teléfono o tarjeta
+                if numeros:
+                    return campo, numeros[0]
+
+    return None, None  # Si no se detecta campo específico
 
 def similitud(texto1, texto2):
     return SequenceMatcher(None, texto1, texto2).ratio()
@@ -160,7 +192,7 @@ def buscar_en_todos_los_indices(query: str) -> str:
             if sim >= 0.5 and fuente not in ya_guardados:
                 resumen = [f"{k}: {v}" for k, v in metadata.items() if k not in ['fuente', 'archivo', 'fila_excel'] and v]
                 resultados_top_1.append(
-                    f"🔹 Coincidencia cercana en {fuente} (Similitud {sim:.2f}):\n" + "\n".join(resumen)
+                    f"🔹 Coincidencia cercana en {fuente}:\n" + "\n".join(resumen)
                 )
                 ya_guardados.add(fuente)
 
@@ -170,7 +202,7 @@ def buscar_en_todos_los_indices(query: str) -> str:
         return respuesta_final
 
     elif resultados_top_1:
-        return "⚠️ No se encontraron coincidencias exactas, pero se encontraron coincidencias cercanas (≥60% de similitud):\n\n" + "\n\n".join(resultados_top_1)
+        return "✅ Se encontraron estas coincidencias:\n\n" + "\n\n".join(resultados_top_1)
 
     else:
         return "❌ No se encontraron resultados relevantes en ninguna fuente."
@@ -226,7 +258,6 @@ def buscar_por_atributo_en_indices(campo: str, valor: str, carpeta_indices: str)
 
         fuente = nombre_dir.replace("index_", "")
         try:
-            print(f"📂 Buscando en fuente: {fuente}")
             storage_context = StorageContext.from_defaults(persist_dir=ruta_indice)
             index = load_index_from_storage(storage_context)
 
@@ -239,9 +270,9 @@ def buscar_por_atributo_en_indices(campo: str, valor: str, carpeta_indices: str)
 
             if nodes:
                 for node in nodes:
-                    texto = node.node.text.strip()
-                    resumen = texto[:300].strip().replace("\n", " ") + ("..." if len(texto) > 300 else "")
-                    resultados.append(f"✅ Coincidencia en '{fuente}':\n{resumen}\n")
+                    metadata = node.node.metadata
+                    resumen = [f"{k}: {v}" for k, v in metadata.items() if k not in ['fuente', 'archivo', 'fila_excel'] and v]
+                    resultados.append(f"✅ Coincidencia en {fuente}:\n" + "\n".join(resumen))
         except Exception as e:
             print(f"⚠️ Error al buscar en {fuente}: {e}")
             continue
@@ -290,18 +321,18 @@ while True:
         continue
 
     try:
-        # Ejecutamos la herramienta y obtenemos la salida
-        respuesta_herramienta = agent.chat(prompt)
+        campo, valor = detectar_campo_y_valor(prompt)
 
-        # Guardamos la salida en una variable
-        salida_azul = respuesta_herramienta  # <-- ESTO ES NUEVO
+        if campo and valor:
+            respuesta_herramienta = buscar_por_atributo_en_indices(campo, valor, carpeta_indices=ruta_indices)
+        else:
+            respuesta_herramienta = buscar_en_todos_los_indices(prompt)
 
-        # Imprimimos la variable "salida_azul"
-        print(f"\nSalida de la herramienta:\n{salida_azul}\n")
+        print(f"\nSalida de la herramienta:\n{respuesta_herramienta}\n")
+
     except Exception as e:
         print(f"❌ Ocurrió un error durante la ejecución del agente: {e}")
-        # Podrías intentar resetear el agente si los errores son persistentes
-        # agent.reset()
+
 
 # Limpiar memoria al salir
 del llm, embed_model, agent, all_tools, indices
