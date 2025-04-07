@@ -11,30 +11,9 @@ from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.core.settings import Settings
 import unicodedata
 import re
-
-def normalizar_texto(texto):
-    """
-    Normaliza el texto para mejorar la consistencia en búsquedas e indexación
-    """
-    if not isinstance(texto, str):
-        texto = str(texto)
-    
-    # Convertir a minúsculas
-    texto = texto.lower()
-    
-    # Eliminar acentos
-    texto = ''.join(
-        char for char in unicodedata.normalize('NFKD', texto)
-        if unicodedata.category(char) != 'Mn'
-    )
-    
-    # Eliminar caracteres especiales y mantener solo letras, números y espacios
-    texto = re.sub(r'[^a-z0-9\s]', '', texto)
-    
-    # Eliminar espacios extra
-    texto = ' '.join(texto.split())
-    
-    return texto.strip()
+import sys
+sys.path.append(r"C:\Users\Sistemas\Documents\OKIP\src")
+from utils import normalizar_texto
 
 def crear_nombre_completo(row):
     """

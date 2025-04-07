@@ -10,6 +10,12 @@ from llama_index.core.agent import ReActAgent
 from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter
 from llama_index.core.retrievers import VectorIndexRetriever
 from difflib import SequenceMatcher
+from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter
+from llama_index.core.retrievers import VectorIndexRetriever
+from llama_index.core import StorageContext, load_index_from_storage
+import sys
+sys.path.append(r"C:\Users\Sistemas\Documents\OKIP\src")
+from utils import normalizar_texto
 
 def similitud(texto1, texto2):
     return SequenceMatcher(None, texto1, texto2).ratio()
@@ -174,85 +180,89 @@ busqueda_global_tool = FunctionTool.from_defaults(
     fn=buscar_en_todos_los_indices,
     name="busqueda_semantica_en_todos_los_indices",
     description=(
-        "Usa esta herramienta cuando necesites encontrar información completa de una persona, dirección, tarjeta o dato específico "
-        "en todas las bases de datos al mismo tiempo. Por ejemplo: 'Dame toda la información de Juan Pérez', '¿Quién vive en malva 101?', "
-        "'¿Qué sabes de Adrian Lino Marmolejo?'. Prioriza coincidencias exactas de nombre completo."
+        "Usa esta herramienta para encontrar información completa de una persona en todas las bases, "
+        "cuando el usuario da el nombre completo. Por ejemplo: 'Dame la información de Juan Pérez', "
+        "'¿Qué sabes de Adrian Lino Marmolejo?'."
     )
 )
 all_tools.insert(0, busqueda_global_tool)
 
 # Herramienta 3: Buscar personas por atributo específico (Campo y Valor)
-def buscar_personas_por_atributo(campo: str, valor: str) -> str:
+def buscar_por_atributo_en_indices(campo: str, valor: str, carpeta_indices: str) -> str:
     """
-    Busca personas que coincidan exactamente con un valor en un campo específico en todos los índices disponibles.
-    (ej., Telefono, Ciudad, Calle, etc.). Devuelve un resumen o lista de nombres.
-    Utiliza filtros de metadatos.
+    Busca coincidencias exactas por campo y valor en todos los índices dentro de la carpeta dada.
+    Aplica normalización para coincidir con los metadatos indexados.
     """
-    print(f"⚙️ Ejecutando herramienta: buscar_personas_por_atributo con campo='{campo}', valor='{valor}'")
-    resultados = []
-    # Normalizar nombres de campos comunes
-    campo_map = {
-        "telefono": "Telefono", "teléfono": "Telefono",
-        "ciudad": "Ciudad", "calle": "Calle",
-        "estado": "Estado", "cp": "CP", "código postal": "CP",
-        "tarjeta": "Tarjeta", "nombre": "Nombre",
-        "direccion": "Dirección", "dirección": "Dirección", "DIRECCION": "Dirección",
-        "colonia": "Colonia", "COLONIA": "Colonia",
-        "sector": "Sector", "SECTOR": "Sector",
-        "municipio": "Municipio", "MUNICIPIO": "Municipio",
-        # Añade más mapeos si es necesario
+    print(f"\n🔍 Buscando registros donde '{campo}' = '{valor}'\n")
+
+    # Mapa para alias de campos comunes
+    mapa_campos = {
+        "telefono": "telefono",
+        "tel": "telefono",
+        "teléfono": "telefono",
+        "direccion": "direccion",
+        "dirección": "direccion",
+        "estado": "estado",
+        "municipio": "municipio",
+        "colonia": "colonia",
+        "tarjeta": "tarjeta",
+        "cp": "cp",
+        "código postal": "cp",
+        "codigo postal": "cp",
+        "nombre completo": "nombre_completo",
+        "nombre": "nombre_completo",
     }
-    campo_normalizado = campo_map.get(campo.lower(), campo.capitalize())  # Intentar normalizar
 
-    for fuente, index in indices.items():
-        filters = MetadataFilters(filters=[
-            ExactMatchFilter(key=campo_normalizado, value=valor.strip()),
-            ExactMatchFilter(key="fuente", value=fuente)  # Filtrar por fuente
-        ])
-        # Recuperar más nodos para ver si hay múltiples coincidencias
-        retriever = VectorIndexRetriever(index=index, similarity_top_k=3, filters=filters)
-        nodes = retriever.retrieve(f"{campo_normalizado} es {valor}")  # Query semántica relacionada
+    campo_normalizado = normalizar_texto(campo)
+    campo_final = mapa_campos.get(campo_normalizado, campo_normalizado)
+    valor_final = normalizar_texto(valor)
 
-        if nodes:
-            nombres_encontrados = set()
-            for node in nodes:
-                nombre = node.node.metadata.get("Nombre Completo", "Nombre Desconocido")
-                if nombre != "Nombre Desconocido":
-                    # Verificar si realmente coincide el valor en los metadatos (doble check)
-                    if str(node.node.metadata.get(campo_normalizado, "")).strip().upper() == valor.strip().upper():
-                        nombres_encontrados.add(nombre)
+    resultados = []
 
-            if nombres_encontrados:
-                if len(nombres_encontrados) == 1:
-                    resultados.append(f"En {fuente}: Se encontró 1 persona con {campo_normalizado} = '{valor}': {list(nombres_encontrados)[0]}")
-                else:
-                    lista_nombres = ", ".join(list(nombres_encontrados)[:5])  # Mostrar hasta 5
-                    resultados.append(f"En {fuente}: Se encontraron {len(nombres_encontrados)} personas con {campo_normalizado} = '{valor}'. Algunas son: {lista_nombres}...")
-            else:
-                # La búsqueda vectorial encontró algo, pero el filtro exacto falló el doble check
-                resultados.append(f"En {fuente}: No se encontró una coincidencia exacta verificada para {campo_normalizado} = '{valor}' en los metadatos recuperados.")
+    for nombre_dir in os.listdir(carpeta_indices):
+        ruta_indice = os.path.join(carpeta_indices, nombre_dir)
+        if not os.path.isdir(ruta_indice) or not os.path.exists(os.path.join(ruta_indice, "docstore.json")):
+            continue
 
-        else:
-            resultados.append(f"En {fuente}: No se encontraron personas con {campo_normalizado} = '{valor}'.")
+        fuente = nombre_dir.replace("index_", "")
+        try:
+            print(f"📂 Buscando en fuente: {fuente}")
+            storage_context = StorageContext.from_defaults(persist_dir=ruta_indice)
+            index = load_index_from_storage(storage_context)
+
+            filters = MetadataFilters(filters=[
+                ExactMatchFilter(key=campo_final, value=valor_final)
+            ])
+
+            retriever = VectorIndexRetriever(index=index, similarity_top_k=5, filters=filters)
+            nodes = retriever.retrieve(f"{campo_final} es {valor_final}")
+
+            if nodes:
+                for node in nodes:
+                    texto = node.node.text.strip()
+                    resumen = texto[:300].strip().replace("\n", " ") + ("..." if len(texto) > 300 else "")
+                    resultados.append(f"✅ Coincidencia en '{fuente}':\n{resumen}\n")
+        except Exception as e:
+            print(f"⚠️ Error al buscar en {fuente}: {e}")
+            continue
 
     if resultados:
-        return "\n\n".join(resultados)
+        return "\n".join(resultados)
     else:
-        return f"No se encontraron personas con {campo_normalizado} = '{valor}' en ninguna fuente."
-
-atributo_tool = FunctionTool.from_defaults(
-    fn=buscar_personas_por_atributo,
-    name="buscar_personas_por_atributo_especifico",
+        return f"❌ No se encontraron coincidencias para '{campo}: {valor}' en los índices."
+    
+# Envolver la función con la ruta real de índices
+buscar_por_atributo_tool = FunctionTool.from_defaults(
+    fn=lambda campo, valor: buscar_por_atributo_en_indices(campo, valor, carpeta_indices=ruta_indices),
+    name="buscar_por_atributo_en_indices",
     description=(
-        "Utiliza esta herramienta cuando necesites encontrar personas que tengan un VALOR específico en un CAMPO conocido. "
-        "Por ejemplo: '¿Quién tiene el teléfono 5512345678?', '¿Cuántas personas viven en la Ciudad Mexico?', "
-        "'Busca personas cuya calle sea Reforma'. Debes especificar el CAMPO y el VALOR."
-
-        "Por ejemplo: '¿Quién tiene el teléfono 5512345678?', '¿Cuántas personas viven en la Ciudad Mexico?', "
-        "'Busca personas cuya calle sea Reforma'. Debes especificar el CAMPO y el VALOR."
+        "Usa esta herramienta cuando el usuario pregunta por un campo específico como teléfono, dirección, estado, tarjeta, etc. "
+        "Por ejemplo: '¿Quién tiene el número 5544332211?', '¿Quién vive en Malva 101?', '¿Quién tiene la tarjeta terminación 8841?', "
+        "'¿Qué personas viven en Querétaro?', '¿Quién vive en calle Reforma 123?'."
     )
 )
-all_tools.insert(2, atributo_tool)
+all_tools.insert(1, buscar_por_atributo_tool)
+
 
 
 # --- 4) CREAR Y EJECUTAR EL AGENTE ---
@@ -262,7 +272,7 @@ try:
     agent = ReActAgent.from_tools(
         tools=all_tools,
         llm=llm,
-        verbose=False  # Muestra los pasos de pensamiento del agente
+        verbose=True  # Muestra los pasos de pensamiento del agente
     )
     print("✅ Agente creado correctamente.")
 except Exception as e:
@@ -281,7 +291,7 @@ while True:
 
     try:
         # Ejecutamos la herramienta y obtenemos la salida
-        respuesta_herramienta = buscar_en_todos_los_indices(prompt)
+        respuesta_herramienta = agent.chat(prompt)
 
         # Guardamos la salida en una variable
         salida_azul = respuesta_herramienta  # <-- ESTO ES NUEVO
