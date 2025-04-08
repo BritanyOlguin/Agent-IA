@@ -19,7 +19,7 @@ def normalizar_texto(texto):
     )
 
     # Eliminar caracteres especiales y mantener solo letras, números y espacios
-    texto = re.sub(r'[^a-z0-9\s]', '', texto)
+    texto = re.sub(r'[^a-z0-9\s,]', '', texto)
 
     # Eliminar espacios extra
     texto = ' '.join(texto.split())

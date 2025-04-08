@@ -14,9 +14,9 @@ from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter
 from llama_index.core.retrievers import VectorIndexRetriever
 from llama_index.core import StorageContext, load_index_from_storage
 import sys
-# Importar la función normalizar_texto desde utils.py
+# Importar la función normalizar_texto desde normalizar_texto.py
 sys.path.append(r"C:\Users\Sistemas\Documents\OKIP\src")
-from utils import normalizar_texto
+from normalizar_texto import normalizar_texto
 import re
 
 # --- 1) CONFIGURACIÓN ---

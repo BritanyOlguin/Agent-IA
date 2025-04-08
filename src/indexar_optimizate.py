@@ -12,9 +12,9 @@ from llama_index.core.settings import Settings
 import unicodedata
 import re
 import sys
-# Importar la función normalizar_texto desde utils.py
+# Importar la función normalizar_texto desde normalizar_texto.py
 sys.path.append(r"C:\Users\Sistemas\Documents\OKIP\src")
-from utils import normalizar_texto
+from normalizar_texto import normalizar_texto
 
 def crear_nombre_completo(row):
     """
@@ -238,6 +238,25 @@ for archivo_nombre in os.listdir(carpeta_bd):
             texto_a_incrustar = texto_base
             if nombre_completo:
                 texto_a_incrustar += f"\nnombre_completo: {nombre_completo}"
+
+            # Generar campo direccion_completa
+            componentes_direccion = []
+            campos_direccion = ['calle', 'domicilio', 'numero', 'campo 14', 'colonia', 'cp', 'codigo postal', 'municipio', 'ciudad', 'sector', 'estado', 'edo de origen', 'entidad']
+
+            for campo in campos_direccion:
+                for col in datos_fila_limpios.keys():
+                    if campo in col:
+                        valor = datos_fila_limpios[col]
+                        if valor and valor.lower() != "nan":
+                            componentes_direccion.append(valor)
+
+            direccion_completa = ", ".join(componentes_direccion) if componentes_direccion else None
+
+            if direccion_completa:
+                direccion_completa = normalizar_texto(direccion_completa)
+                datos_fila_limpios["direccion"] = direccion_completa
+                texto_a_incrustar += f"\ndireccion: {direccion_completa}"
+
 
             # 5. Generar metadata, también condicional
             metadata = {
