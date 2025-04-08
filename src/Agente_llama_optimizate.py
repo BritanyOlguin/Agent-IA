@@ -214,6 +214,110 @@ def extraer_valor(prompt: str) -> str:
         return palabras[-1]
     return prompt
 
+def es_consulta_direccion(prompt: str) -> bool:
+    """
+    Determina si la consulta está relacionada con una dirección.
+    
+    Args:
+        prompt: Texto de la consulta del usuario
+        
+    Returns:
+        True si la consulta parece ser sobre una dirección
+    """
+    prompt_lower = prompt.lower()
+    
+    # Patrones comunes en consultas de dirección
+    patrones_consulta = [
+        r"quien\s+vive\s+en\s+",
+        r"de\s+quien\s+es\s+la\s+direccion\s+",
+        r"busca\s+la\s+direccion\s+",
+        r"encuentra\s+la\s+direccion\s+",
+        r"personas\s+que\s+viven\s+en\s+",
+        r"domicilios?\s+en\s+",
+        r"casas?\s+en\s+",
+        r"habitantes\s+de\s+",
+        r"vive\s+en\s+",
+        r"donde\s+esta\s+",
+        r"ubicado\s+en\s+",
+    ]
+    
+    # Palabras clave comunes en direcciones mexicanas
+    palabras_direccion = [
+        "calle", "avenida", "av", "ave", "boulevard", "blvd", "calzada", "calz",
+        "colonia", "col", "fraccionamiento", "fracc", "sector", "manzana", "lote",
+        "edificio", "depto", "departamento", "int", "ext", "cp", "código postal",
+        "lagos", "country", "zoquipan", "malva", 'domicilio', 'numero', 'campo 14', 'cp', 'codigo postal', 'municipio', 'ciudad', 'sector', 'estado', 'edo de origen', 'entidad'
+    ]
+    
+    # Si contiene algún patrón de consulta de dirección
+    for patron in patrones_consulta:
+        if re.search(patron, prompt_lower):
+            return True
+    
+    # Si tiene al menos dos palabras clave de dirección o un número seguido de una palabra clave
+    palabras_encontradas = sum(1 for palabra in palabras_direccion if palabra in prompt_lower)
+    if palabras_encontradas >= 2:
+        return True
+    
+    # Si tiene un número seguido de una palabra clave de dirección
+    if re.search(r"\d+\s+([a-z]+\s+)?(" + "|".join(palabras_direccion) + ")", prompt_lower):
+        return True
+    
+    # Si menciona explícitamente calles o colonias específicas que están en tus datos
+    nombres_calles_colonias = ["zoquipan", "lagos del country", "hidalgo", "malva", "paseos", "san luis de la paz"]
+    for nombre in nombres_calles_colonias:
+        if nombre in prompt_lower:
+            return True
+    
+    return False
+
+def extraer_texto_direccion(prompt: str) -> str:
+    """
+    Extrae el texto de dirección de una consulta del usuario.
+    """
+    prompt = prompt.strip()
+    prompt_lower = prompt.lower()
+    
+    # Patrones para extraer direcciones después de frases comunes
+    patrones_extraccion = [
+        r"quien vive en\s+(.+)$",
+        r"de quien es la direccion\s+(.+)$",
+        r"busca la direccion\s+(.+)$",
+        r"encuentra\s+(.+)$",
+        r"personas que viven en\s+(.+)$",
+        r"domicilios? en\s+(.+)$",
+        r"casas? en\s+(.+)$",
+        r"habitantes de\s+(.+)$",
+        r"vive en\s+(.+)$",
+        r"donde esta\s+(.+)$",
+        r"ubicado en\s+(.+)$"
+    ]
+    
+    # Intentar extraer con patrones
+    for patron in patrones_extraccion:
+        match = re.search(patron, prompt_lower)
+        if match:
+            texto_direccion = match.group(1).strip()
+            # Limpiar signos de puntuación extra
+            texto_direccion = texto_direccion.strip('?!.,;:"\'')
+            return texto_direccion
+    
+    # Si no hay patrón específico, verificar si todo el texto parece ser una dirección
+    palabras_clave_direccion = ["calle", "avenida", "av", "colonia", "col", "fracc", 
+                               "edificio", "número", "num", "#", "sector", "municipio",
+                               "zoquipan", "lagos", "country", "hidalgo", "malva", "paseos"]
+    
+    palabras = prompt_lower.split()
+    if any(palabra in palabras_clave_direccion for palabra in palabras):
+        # Si hay palabras clave de dirección, asumir que todo el texto es la dirección
+        return prompt
+    
+    # Si contiene un número (probable número de casa) y otras palabras
+    if re.search(r"\d+", prompt) and len(palabras) > 1:
+        return prompt
+    
+    # Si todo lo demás falla, devolver el texto completo
+    return prompt
 
 def detectar_campo_valor(prompt: str):
     prompt_lower = prompt.lower()
@@ -276,6 +380,144 @@ def buscar_campos_similares(valor: str, campos: list[str], carpeta_indices: str)
         return "\n".join(resultados)
     else:
         return f"No se encontraron coincidencias para el valor '{valor}'."
+    
+def buscar_direccion_combinada(texto_direccion: str) -> str:
+    """
+    Busca coincidencias semánticas de dirección en todos los índices.
+    Maneja direcciones combinadas como "ZOQUIPAN 1260, LAGOS DEL COUNTRY"
+    descomponiéndolas en partes para mejorar la búsqueda.
+    """
+    print(f"\nBuscando dirección combinada: '{texto_direccion}'")
+    
+    # Normalizar la dirección de búsqueda
+    texto_direccion_normalizado = normalizar_texto(texto_direccion)
+    
+    # Dividir la dirección en componentes (calle, número, colonia, etc.)
+    componentes = re.split(r'[,\s]+', texto_direccion_normalizado)
+    componentes = [c for c in componentes if c]  # Eliminar componentes vacíos
+    
+    resultados = []
+    resultados_puntajes = {}  # Para rastrear la relevancia de cada resultado
+    
+    # Buscar en todos los índices
+    for nombre_dir in os.listdir(ruta_indices):
+        ruta_indice = os.path.join(ruta_indices, nombre_dir)
+        if not os.path.isdir(ruta_indice) or not os.path.exists(os.path.join(ruta_indice, "docstore.json")):
+            continue
+            
+        fuente = nombre_dir.replace("index_", "")
+        
+        try:
+            # Cargar el índice
+            storage_context = StorageContext.from_defaults(persist_dir=ruta_indice)
+            index = load_index_from_storage(storage_context)
+            
+            # 1. Búsqueda exacta en el campo dirección
+            try:
+                filtro_direccion = MetadataFilters(filters=[
+                    ExactMatchFilter(key="direccion", value=texto_direccion_normalizado)
+                ])
+                retriever = VectorIndexRetriever(index=index, similarity_top_k=3, filters=filtro_direccion)
+                nodes = retriever.retrieve(f"dirección es {texto_direccion}")
+                
+                for node in nodes:
+                    metadata = node.node.metadata
+                    id_registro = str(metadata.get("id", "")) + str(metadata.get("fila_origen", ""))
+                    
+                    if id_registro not in resultados_puntajes:
+                        resumen = [f"{k}: {v}" for k, v in metadata.items() if k not in ['fuente', 'archivo', 'fila_excel'] and v]
+                        resultados.append({
+                            'texto': f"Coincidencia exacta en {fuente}:\n" + "\n".join(resumen),
+                            'id': id_registro,
+                            'puntaje': 1.0  # Puntaje máximo para coincidencia exacta
+                        })
+                        resultados_puntajes[id_registro] = 1.0
+            except Exception as e:
+                print(f"Error en búsqueda exacta: {e}")
+            
+            # 2. Búsqueda por componentes individuales (si no hay resultados exactos)
+            if not resultados:
+                # Campos relacionados con direcciones
+                campos_direccion = ['direccion', 'domicilio', 'calle', 'colonia', 'municipio', 'sector', 'cp', 'codigo postal']
+                
+                for campo in campos_direccion:
+                    for componente in componentes:
+                        if len(componente) < 3:  # Ignorar componentes muy cortos
+                            continue
+                            
+                        try:
+                            # Búsqueda por componente en el campo específico
+                            retriever = VectorIndexRetriever(index=index, similarity_top_k=5)
+                            nodes = retriever.retrieve(f"{campo} contiene {componente}")
+                            
+                            for node in nodes:
+                                metadata = node.node.metadata
+                                direccion_registro = normalizar_texto(str(metadata.get('direccion', '')))
+                                
+                                # Si no hay dirección, crear una con los campos disponibles
+                                if not direccion_registro:
+                                    partes_direccion = []
+                                    for key in ['domicilio', 'calle', 'numero', 'colonia', 'sector', 'municipio']:
+                                        if key in metadata and metadata[key]:
+                                            partes_direccion.append(str(metadata[key]))
+                                    direccion_registro = normalizar_texto(", ".join(partes_direccion))
+                                
+                                # Calcular similitud entre la dirección buscada y la encontrada
+                                similitud_score = similitud(texto_direccion_normalizado, direccion_registro)
+                                
+                                # Comprobar si contiene los componentes clave
+                                componentes_encontrados = sum(1 for comp in componentes if comp in direccion_registro)
+                                ratio_componentes = componentes_encontrados / len(componentes) if componentes else 0
+                                
+                                # Combinar puntuaciones
+                                puntaje_combinado = (similitud_score * 0.6) + (ratio_componentes * 0.4)
+                                
+                                # Solo considerar si tiene al menos cierta relevancia
+                                if puntaje_combinado >= 0.7:
+                                    id_registro = str(metadata.get("id", "")) + str(metadata.get("fila_origen", ""))
+                                    
+                                    # Si ya tenemos este registro, actualizar solo si el puntaje es mejor
+                                    if id_registro in resultados_puntajes:
+                                        if puntaje_combinado > resultados_puntajes[id_registro]:
+                                            resultados_puntajes[id_registro] = puntaje_combinado
+                                            # Actualizar en la lista de resultados
+                                            for i, res in enumerate(resultados):
+                                                if res['id'] == id_registro:
+                                                    resumen = [f"{k}: {v}" for k, v in metadata.items() 
+                                                              if k not in ['fuente', 'archivo', 'fila_excel'] and v]
+                                                    resultados[i] = {
+                                                        'texto': f"Coincidencia en {fuente} (relevancia: {puntaje_combinado:.2f}):\n" + "\n".join(resumen),
+                                                        'id': id_registro,
+                                                        'puntaje': puntaje_combinado
+                                                    }
+                                    else:
+                                        resumen = [f"{k}: {v}" for k, v in metadata.items() 
+                                                   if k not in ['fuente', 'archivo', 'fila_excel'] and v]
+                                        resultados.append({
+                                            'texto': f"Coincidencia en {fuente} (relevancia: {puntaje_combinado:.2f}):\n" + "\n".join(resumen),
+                                            'id': id_registro,
+                                            'puntaje': puntaje_combinado
+                                        })
+                                        resultados_puntajes[id_registro] = puntaje_combinado
+                        except Exception as e:
+                            print(f"Error en búsqueda de componente '{componente}' en campo '{campo}': {e}")
+        
+        except Exception as e:
+            print(f"Error buscando en {fuente}: {e}")
+            continue
+    
+    # Ordenar resultados por puntaje (de mayor a menor)
+    resultados_ordenados = sorted(resultados, key=lambda x: x['puntaje'], reverse=True)
+    
+    # Limitar a los 5 mejores resultados
+    resultados_ordenados = resultados_ordenados[:5]
+    
+    # Formatear los resultados
+    if resultados_ordenados:
+        # Eliminar la información de puntaje para presentación al usuario
+        return "\n\n".join([res['texto'] for res in resultados_ordenados])
+    else:
+        return f"No se encontraron coincidencias para la dirección '{texto_direccion}'."
 
 def similitud(texto1, texto2):
     return SequenceMatcher(None, texto1, texto2).ratio()
@@ -460,6 +702,22 @@ buscar_por_atributo_tool = FunctionTool.from_defaults(
 )
 all_tools.insert(1, buscar_por_atributo_tool)
 
+# Crear herramienta para búsqueda de dirección combinada
+buscar_direccion_tool = FunctionTool.from_defaults(
+    fn=buscar_direccion_combinada,
+    name="buscar_direccion_combinada",
+    description=(
+        "Usa esta herramienta cuando el usuario busca una dirección completa o parcial. "
+        "Es especialmente útil para direcciones combinadas como 'ZOQUIPAN 1260, LAGOS DEL COUNTRY'. "
+        "Por ejemplo: '¿De quién es esta dirección: ZOQUIPAN 1260, LAGOS DEL COUNTRY?', "
+        "'Busca ZOQUIPAN 1260', 'Quién vive en casa #63, Zapopan', 'Quién vive en ZAPOPAN, DF', etc. "
+        "Esta herramienta realiza búsquedas semánticas en componentes de dirección."
+    )
+)
+
+# Insertar la herramienta al inicio de la lista para darle prioridad
+all_tools.insert(0, buscar_direccion_tool)
+
 # --- 5) CREAR Y EJECUTAR EL AGENTE ---
 
 # CREAR EL AGENTE REACT
@@ -476,7 +734,7 @@ except Exception as e:
 
 print("\n🤖 Agente listo. Escribe tu pregunta o 'salir' para terminar.")
 
-# CICLO DE CHAT
+# CICLO DE CHAT MEJORADO
 while True:
     prompt = input("Pregunta: ")
     if prompt.lower() == 'salir':
@@ -485,23 +743,48 @@ while True:
         continue
 
     try:
-        campo, valor = detectar_campo_valor(prompt)
-
-        if campo and valor:
-            respuesta_herramienta = buscar_atributo(campo, valor, carpeta_indices=ruta_indices)
+        # 1. Verificar si es una consulta de dirección
+        if es_consulta_direccion(prompt):
+            # Extraer el texto de dirección
+            texto_direccion = extraer_texto_direccion(prompt)
+            print(f"[DEBUG] Consulta de dirección detectada: '{texto_direccion}'")
+            
+            # Usar la función de búsqueda por dirección combinada
+            respuesta_herramienta = buscar_direccion_combinada(texto_direccion)
         else:
-            valor_extraido = extraer_valor(prompt)
-            campos_disponibles = list(campos_detectados)
-            campos_probables = sugerir_campos(valor_extraido, campos_disponibles)
-            respuesta_herramienta = buscar_campos_inteligente(valor_extraido, carpeta_indices=ruta_indices, campos_ordenados=campos_probables)
-
-            if "No se encontraron coincidencias" in respuesta_herramienta:
-                respuesta_herramienta = buscar_nombre(prompt)
+            # 2. Si no es dirección, seguir con el flujo original
+            campo, valor = detectar_campo_valor(prompt)
+            
+            if campo and valor:
+                print(f"[DEBUG] Campo y valor detectados: {campo}={valor}")
+                respuesta_herramienta = buscar_atributo(campo, valor, carpeta_indices=ruta_indices)
+            else:
+                valor_extraido = extraer_valor(prompt)
+                print(f"[DEBUG] Valor extraído: '{valor_extraido}'")
+                
+                campos_disponibles = list(campos_detectados)
+                campos_probables = sugerir_campos(valor_extraido, campos_disponibles)
+                
+                respuesta_herramienta = buscar_campos_inteligente(valor_extraido, carpeta_indices=ruta_indices, campos_ordenados=campos_probables)
+                
+                # Si no hay resultados, intentar buscar como nombre
+                if "No se encontraron coincidencias" in respuesta_herramienta:
+                    print(f"[DEBUG] Intentando búsqueda por nombre")
+                    respuesta_herramienta = buscar_nombre(prompt)
 
         print(f"\n📄Resultado:\n{respuesta_herramienta}\n")
 
     except Exception as e:
         print(f"❌ Ocurrió un error durante la ejecución del agente: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        # Intentar usar el agente ReAct como fallback
+        try:
+            respuesta_agente = agent.query(prompt)
+            print(f"\n📄Resultado (procesado por agente fallback):\n{respuesta_agente}\n")
+        except Exception as e2:
+            print(f"❌ También falló el agente fallback: {e2}")
 
 # LIMPIAR MEMORIA AL SALIR
 del llm, embed_model, agent, all_tools, indices
