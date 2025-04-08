@@ -146,9 +146,17 @@ def buscar_campos_inteligente(valor: str, carpeta_indices: str, campos_ordenados
     print(f"\nBúsqueda para valor: '{valor}'")
     valor_normalizado = normalizar_texto(valor)
     resultados = []
-
+    
+    # Detectar si es una localidad conocida
+    localidades_conocidas = ["zapopan", "hidalgo", "san luis de la paz", "guanajuato", "aguascalientes", "lagos del country"]
+    es_localidad = any(loc in valor_normalizado for loc in localidades_conocidas)
+    
     if campos_ordenados is None:
-        campos_ordenados = ['municipio', 'colonia', 'direccion', 'estado', 'calle', 'ciudad', 'cp', 'sector']
+        # Priorizar campos de localidad si parece ser una localidad
+        if es_localidad:
+            campos_ordenados = ['municipio', 'ciudad', 'sector', 'estado', 'colonia', 'direccion', 'calle', 'cp']
+        else:
+            campos_ordenados = ['municipio', 'colonia', 'direccion', 'estado', 'calle', 'ciudad', 'cp', 'sector']
 
     for campo in campos_ordenados:
         campo_variantes = campos_clave.get(campo, [campo])
@@ -166,10 +174,11 @@ def buscar_campos_inteligente(valor: str, carpeta_indices: str, campos_ordenados
                     storage_context = StorageContext.from_defaults(persist_dir=ruta_indice)
                     index = load_index_from_storage(storage_context)
 
+                    # Búsqueda exacta
                     filters = MetadataFilters(filters=[
                         ExactMatchFilter(key=key, value=valor_normalizado)
                     ])
-                    retriever = VectorIndexRetriever(index=index, similarity_top_k=5, filters=filters)
+                    retriever = VectorIndexRetriever(index=index, similarity_top_k=10, filters=filters)
                     nodes = retriever.retrieve(f"{campo} es {valor}")
 
                     if nodes:
@@ -177,98 +186,123 @@ def buscar_campos_inteligente(valor: str, carpeta_indices: str, campos_ordenados
                             metadata = node.node.metadata
                             resumen = [f"{k}: {v}" for k, v in metadata.items() if k not in ['fuente', 'archivo', 'fila_excel'] and v]
                             resultados.append(f"Coincidencia en {fuente}:\n" + "\n".join(resumen))
-
-                        return "\n".join(resultados)
-
+                
                 except Exception as e:
                     print(f"Error buscando en {fuente}: {e}")
                     continue
-
+    
+    # Para localidades, devolver todos los resultados encontrados
+    if es_localidad and resultados:
+        return "\n\n".join(resultados[:15])  # Limitar a 15 resultados para no sobrecargar
+    
+    # Para otras búsquedas, devolver los resultados normalmente
+    if resultados:
+        return "\n\n".join(resultados[:5])  # Limitar a 5 resultados
+        
     return f"No se encontraron coincidencias relevantes para el valor '{valor}'."
 
 def extraer_valor(prompt: str) -> str:
     """
-    Extrae un valor probable desde la pregunta, eliminando verbos como 'vive en', 'está en', etc.
+    Extrae un valor probable desde la pregunta simple, eliminando verbos
+    como 'vive en', 'está en', etc.
     """
     prompt = prompt.strip().lower()
 
+    # Buscar números largos (teléfonos, etc.)
     numeros = re.findall(r"\d{7,}", prompt)
     if numeros:
         return numeros[0]
 
+    # Patrones comunes para extraer valores después de ciertas frases
     frases_clave = [
         r"quien vive en\s+([a-zA-ZáéíóúñÑ0-9\s\-]+)",
         r"vive en\s+([a-zA-ZáéíóúñÑ0-9\s\-]+)",
         r"quien esta en\s+([a-zA-ZáéíóúñÑ0-9\s\-]+)",
         r"en\s+([a-zA-ZáéíóúñÑ0-9\s\-]+)$",
-        r"de\s+([a-zA-ZáéíóúñÑ0-9\s\-]+)$"
+        r"de\s+([a-zA-ZáéíóúñÑ0-9\s\-]+)$",
+        r"quien\s+([a-zA-ZáéíóúñÑ0-9\s\-]+)$"  # Para casos como "quien lomas de atemajac"
     ]
 
     for frase in frases_clave:
         match = re.search(frase, prompt)
         if match:
-            return match.group(1).strip()
+            valor = match.group(1).strip()
+            # Si termina en signo de interrogación, elimínalo
+            valor = valor.rstrip('?')
+            return valor
 
+    # Eliminar palabras comunes de pregunta al inicio
+    palabras_pregunta = ["quien", "quién", "donde", "dónde", "cual", "cuál", "como", "cómo"]
+    tokens = prompt.split()
+    if tokens and tokens[0] in palabras_pregunta:
+        return " ".join(tokens[1:])
+
+    # Si todo lo demás falla, devolver el texto sin palabras de pregunta
     palabras = prompt.split()
-    if palabras:
-        return palabras[-1]
+    palabras_filtradas = [p for p in palabras if p not in palabras_pregunta]
+    if palabras_filtradas:
+        return " ".join(palabras_filtradas)
+    
     return prompt
 
 def es_consulta_direccion(prompt: str) -> bool:
     """
-    Determina si la consulta está relacionada con una dirección.
-    
-    Args:
-        prompt: Texto de la consulta del usuario
-        
-    Returns:
-        True si la consulta parece ser sobre una dirección
+    Determina si la consulta está relacionada con una dirección compleja.
+    Devuelve False para consultas simples como "quien vive en zoquipan 1271"
+    que deberían manejarse por la búsqueda por atributo.
     """
     prompt_lower = prompt.lower()
     
-    # Patrones comunes en consultas de dirección
+    # Si es una consulta simple (pocos componentes), procesarla con búsqueda por atributo
+    # Extraer la parte después de "quien vive en", "donde está", etc.
+    patrones_extraccion = [
+        r"quien vive en\s+(.+)$",
+        r"vive en\s+(.+)$",
+        r"quien esta en\s+(.+)$",
+        r"donde esta\s+(.+)$",
+        r"ubicado en\s+(.+)$"
+    ]
+    
+    for patron in patrones_extraccion:
+        match = re.search(patron, prompt_lower)
+        if match:
+            valor = match.group(1).strip()
+            # Si el valor contiene coma, es una dirección compleja
+            if ',' in valor:
+                return True
+            # Si el valor tiene pocas palabras, procesar con búsqueda por atributo
+            palabras = valor.split()
+            if len(palabras) < 4:
+                return False
+    
+    # Patrones comunes en consultas de dirección compleja
     patrones_consulta = [
-        r"quien\s+vive\s+en\s+",
         r"de\s+quien\s+es\s+la\s+direccion\s+",
         r"busca\s+la\s+direccion\s+",
-        r"encuentra\s+la\s+direccion\s+",
-        r"personas\s+que\s+viven\s+en\s+",
-        r"domicilios?\s+en\s+",
-        r"casas?\s+en\s+",
-        r"habitantes\s+de\s+",
-        r"vive\s+en\s+",
-        r"donde\s+esta\s+",
-        r"ubicado\s+en\s+",
+        r"encuentra\s+la\s+direccion\s+"
     ]
     
-    # Palabras clave comunes en direcciones mexicanas
-    palabras_direccion = [
-        "calle", "avenida", "av", "ave", "boulevard", "blvd", "calzada", "calz",
-        "colonia", "col", "fraccionamiento", "fracc", "sector", "manzana", "lote",
-        "edificio", "depto", "departamento", "int", "ext", "cp", "código postal",
-        "lagos", "country", "zoquipan", "malva", 'domicilio', 'numero', 'campo 14', 'cp', 'codigo postal', 'municipio', 'ciudad', 'sector', 'estado', 'edo de origen', 'entidad'
-    ]
-    
-    # Si contiene algún patrón de consulta de dirección
+    # Si contiene algún patrón específico de dirección compleja
     for patron in patrones_consulta:
         if re.search(patron, prompt_lower):
             return True
     
-    # Si tiene al menos dos palabras clave de dirección o un número seguido de una palabra clave
+    # Palabras clave comunes en direcciones mexicanas
+    palabras_direccion = [
+        "calle", "avenida", "av", "ave", "boulevard", "blvd", "calzada", "calz",
+        "colonia", "col", "fraccionamiento", "fracc", 'calle', 'domicilio', 'numero', 'campo 14', 'colonia', 'cp', 'codigo postal', 'municipio', 'ciudad', 'sector', 'estado', 'edo de origen', 'entidad'
+    ]
+    
+    # Si tiene al menos dos palabras clave de dirección específicas, es compleja
     palabras_encontradas = sum(1 for palabra in palabras_direccion if palabra in prompt_lower)
     if palabras_encontradas >= 2:
         return True
-    
-    # Si tiene un número seguido de una palabra clave de dirección
-    if re.search(r"\d+\s+([a-z]+\s+)?(" + "|".join(palabras_direccion) + ")", prompt_lower):
+        
+    # Si tiene una coma, probablemente es una dirección compleja
+    if ',' in prompt_lower:
         return True
     
-    # Si menciona explícitamente calles o colonias específicas que están en tus datos
-    nombres_calles_colonias = ["zoquipan", "lagos del country", "hidalgo", "malva", "paseos", "san luis de la paz"]
-    for nombre in nombres_calles_colonias:
-        if nombre in prompt_lower:
-            return True
-    
+    # En cualquier otro caso, dejarlo para búsqueda por atributo
     return False
 
 def extraer_texto_direccion(prompt: str) -> str:
@@ -743,31 +777,31 @@ while True:
         continue
 
     try:
-        # 1. Verificar si es una consulta de dirección
+        # 1. Verificar si es una consulta de dirección compleja
         if es_consulta_direccion(prompt):
-            # Extraer el texto de dirección
+            # Es una dirección compleja, usar búsqueda por dirección combinada
             texto_direccion = extraer_texto_direccion(prompt)
-            print(f"[DEBUG] Consulta de dirección detectada: '{texto_direccion}'")
+            print(f"[DEBUG] Consulta de dirección compleja detectada: '{texto_direccion}'")
             
-            # Usar la función de búsqueda por dirección combinada
             respuesta_herramienta = buscar_direccion_combinada(texto_direccion)
         else:
-            # 2. Si no es dirección, seguir con el flujo original
+            # 2. Si no es dirección compleja, verificar si es campo específico
             campo, valor = detectar_campo_valor(prompt)
             
             if campo and valor:
                 print(f"[DEBUG] Campo y valor detectados: {campo}={valor}")
                 respuesta_herramienta = buscar_atributo(campo, valor, carpeta_indices=ruta_indices)
             else:
+                # 3. Para consultas simples, extraer el valor y buscar en múltiples campos
                 valor_extraido = extraer_valor(prompt)
-                print(f"[DEBUG] Valor extraído: '{valor_extraido}'")
+                print(f"[DEBUG] Consulta simple detectada, valor extraído: '{valor_extraido}'")
                 
                 campos_disponibles = list(campos_detectados)
                 campos_probables = sugerir_campos(valor_extraido, campos_disponibles)
                 
                 respuesta_herramienta = buscar_campos_inteligente(valor_extraido, carpeta_indices=ruta_indices, campos_ordenados=campos_probables)
                 
-                # Si no hay resultados, intentar buscar como nombre
+                # Si no hay resultados, intentar búsqueda por nombre
                 if "No se encontraron coincidencias" in respuesta_herramienta:
                     print(f"[DEBUG] Intentando búsqueda por nombre")
                     respuesta_herramienta = buscar_nombre(prompt)
