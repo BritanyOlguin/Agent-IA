@@ -426,18 +426,34 @@ def buscar_direccion_combinada(texto_direccion: str) -> str:
     # Normalizar la dirección de búsqueda
     texto_direccion_normalizado = normalizar_texto(texto_direccion)
     
-    # Buscar primero coincidencias exactas
-    resultados_exactos = []
+    # Preprocesar para separar números pegados a texto (como "malva101" -> "malva 101")
+    texto_direccion_normalizado = re.sub(r'([a-zA-Z])(\d+)', r'\1 \2', texto_direccion_normalizado)
     
     # Dividir la dirección en componentes (calle, número, colonia, etc.)
     componentes = re.split(r'[,\s]+', texto_direccion_normalizado)
     componentes = [c for c in componentes if c and len(c) > 1]  # Eliminar componentes vacíos y muy cortos
     
+    # Identificar posibles números de calle en la búsqueda
+    numeros_busqueda = [comp for comp in componentes if comp.isdigit()]
+    calles_busqueda = [comp for comp in componentes if not comp.isdigit() and not comp in ['de', 'la', 'del', 'los', 'las', 'y', 'a', 'en', 'el']]
+    
+    # Extraer componentes clave para el filtrado estricto posterior
+    componentes_clave = [comp for comp in componentes if not comp in ['de', 'la', 'del', 'los', 'las', 'y', 'a', 'en', 'el']]
+    
     # Imprimir los componentes para depuración
     print(f"[DEBUG] Componentes de búsqueda: {componentes}")
+    if numeros_busqueda:
+        print(f"[DEBUG] Números detectados: {numeros_busqueda}")
+    if calles_busqueda:
+        print(f"[DEBUG] Calles/colonias: {calles_busqueda}")
     
-    resultados = []
+    # Almacenar todos los resultados encontrados
+    todos_resultados = []
+    resultados_exactos = []
     resultados_puntajes = {}  # Para rastrear la relevancia de cada resultado
+    
+    # Bandera para saber si ya se encontraron coincidencias exactas por número
+    encontrado_por_numero = False
     
     # Buscar en todos los índices
     for nombre_dir in os.listdir(ruta_indices):
@@ -452,184 +468,198 @@ def buscar_direccion_combinada(texto_direccion: str) -> str:
             storage_context = StorageContext.from_defaults(persist_dir=ruta_indice)
             index = load_index_from_storage(storage_context)
             
-            # 1. Buscar coincidencia exacta en campos comunes de dirección
-            campos_direccion_exacta = ['domicilio', 'calle', 'direccion']
-            encontrada_coincidencia_exacta = False
+            # 1. Búsqueda ESPECÍFICA primero por número exacto si existe en la consulta
+            if numeros_busqueda and calles_busqueda:
+                # Buscar combinación de calle y número exacto - MUY ALTA PRIORIDAD
+                for calle in calles_busqueda[:2]:  # Considerar solo hasta 2 primeras posibles calles
+                    for numero in numeros_busqueda:
+                        try:
+                            # Búsqueda específica en metadatos
+                            for metadata_key in ['domicilio', 'calle', 'direccion']:
+                                # Buscar por componentes combinados (calle + número)
+                                retriever = VectorIndexRetriever(index=index, similarity_top_k=5)
+                                consulta_especifica = f"{calle} {numero}"
+                                nodes = retriever.retrieve(consulta_especifica)
+                                
+                                for node in nodes:
+                                    metadata = node.node.metadata
+                                    
+                                    # Verificar coincidencia de número exacto en algún campo de dirección
+                                    tiene_numero_exacto = False
+                                    tiene_calle = False
+                                    
+                                    # Buscar el número exacto y la calle en cualquier campo de dirección
+                                    for k, v in metadata.items():
+                                        if k in ['domicilio', 'calle', 'numero', 'direccion']:
+                                            # Extraer posibles números en este campo
+                                            nums_en_campo = re.findall(r'\d+', str(v))
+                                            if numero in nums_en_campo:
+                                                tiene_numero_exacto = True
+                                            if calle.lower() in str(v).lower():
+                                                tiene_calle = True
+                                    
+                                    # Si contiene tanto el número exacto como la calle, es una coincidencia muy relevante
+                                    if tiene_numero_exacto and tiene_calle:
+                                        encontrado_por_numero = True
+                                        id_registro = str(metadata.get("id", "")) + str(metadata.get("fila_origen", ""))
+                                        
+                                        if id_registro not in resultados_puntajes or 1.0 > resultados_puntajes[id_registro]:
+                                            resumen = [f"{k}: {v}" for k, v in metadata.items() 
+                                                       if k not in ['fuente', 'archivo', 'fila_excel'] and v]
+                                            
+                                            resultados_exactos.append({
+                                                'texto': f"Coincidencia exacta en {fuente}:\n" + "\n".join(resumen),
+                                                'id': id_registro,
+                                                'puntaje': 1.0
+                                            })
+                                            resultados_puntajes[id_registro] = 1.0
+                        except Exception as e:
+                            print(f"Error en búsqueda de combinación exacta: {e}")
             
-            for campo in campos_direccion_exacta:
-                try:
-                    for componente_principal in componentes[:2]:  # Enfocarse en los primeros componentes (probablemente calle y número)
-                        if len(componente_principal) < 3:  # Ignorar componentes muy cortos
-                            continue
-                            
-                        # Búsqueda exacta en el campo específico
-                        filtro_exacto = MetadataFilters(filters=[
-                            ExactMatchFilter(key=campo, value=componente_principal)
-                        ])
-                        retriever = VectorIndexRetriever(index=index, similarity_top_k=5, filters=filtro_exacto)
-                        nodes = retriever.retrieve(f"{campo} es exactamente {componente_principal}")
-                        
-                        for node in nodes:
-                            metadata = node.node.metadata
-                            # Verificar si este resultado contiene todos los componentes importantes
-                            direccion_completa = ""
-                            for key in ['domicilio', 'calle', 'direccion', 'colonia', 'municipio', 'sector']:
-                                if key in metadata and metadata[key]:
-                                    direccion_completa += str(metadata[key]) + " "
-                            
-                            direccion_completa = normalizar_texto(direccion_completa)
-                            
-                            # Verificar si contiene exactamente lo que buscamos
-                            coincidencia_total = True
-                            for comp in componentes:
-                                if comp not in direccion_completa:
-                                    coincidencia_total = False
-                                    break
-                            
-                            if coincidencia_total:
-                                encontrada_coincidencia_exacta = True
-                                id_registro = str(metadata.get("id", "")) + str(metadata.get("fila_origen", ""))
-                                if id_registro not in resultados_puntajes:
-                                    resumen = [f"{k}: {v}" for k, v in metadata.items() 
-                                              if k not in ['fuente', 'archivo', 'fila_excel'] and v]
-                                    resultados_exactos.append({
-                                        'texto': f"Coincidencia exacta en {fuente}:\n" + "\n".join(resumen),
-                                        'id': id_registro
-                                    })
-                                    resultados_puntajes[id_registro] = 1.0
-                except Exception as e:
-                    print(f"Error en búsqueda exacta de componente: {e}")
-            
-            # 2. Búsqueda en el campo dirección completo
-            try:
-                filtro_direccion = MetadataFilters(filters=[
-                    ExactMatchFilter(key="direccion", value=texto_direccion_normalizado)
-                ])
-                retriever = VectorIndexRetriever(index=index, similarity_top_k=3, filters=filtro_direccion)
-                nodes = retriever.retrieve(f"dirección es {texto_direccion}")
+            # 2. Si no se encontraron coincidencias exactas por número, hacer búsqueda semántica
+            if not encontrado_por_numero:
+                # Búsqueda semántica amplia
+                retriever = VectorIndexRetriever(index=index, similarity_top_k=10)
+                
+                # Construir una consulta que incluya todos los componentes principales
+                consulta = " ".join(componentes[:4]) if len(componentes) > 4 else texto_direccion_normalizado 
+                nodes = retriever.retrieve(consulta)
                 
                 for node in nodes:
                     metadata = node.node.metadata
                     id_registro = str(metadata.get("id", "")) + str(metadata.get("fila_origen", ""))
                     
-                    if id_registro not in resultados_puntajes:
-                        resumen = [f"{k}: {v}" for k, v in metadata.items() if k not in ['fuente', 'archivo', 'fila_excel'] and v]
-                        resultados.append({
-                            'texto': f"Coincidencia exacta en {fuente}:\n" + "\n".join(resumen),
+                    # Construir un texto completo con todos los campos de dirección para búsqueda
+                    texto_completo = ""
+                    campos_direccion_valores = {}
+                    
+                    for k, v in metadata.items():
+                        if k in ['domicilio', 'calle', 'numero', 'colonia', 'sector', 'municipio', 'ciudad', 'estado', 'cp', 'direccion']:
+                            texto_completo += f" {v}"
+                            campos_direccion_valores[k] = str(v)
+                    
+                    texto_completo = normalizar_texto(texto_completo)
+                    
+                    # Verificación de números exactos - ALTA PRIORIDAD
+                    if numeros_busqueda:
+                        tiene_numero_exacto = False
+                        for num in numeros_busqueda:
+                            nums_en_texto = re.findall(r'\b\d+\b', texto_completo)
+                            if num in nums_en_texto:
+                                tiene_numero_exacto = True
+                                break
+                        
+                        # Verificación de números cercanos - MEDIA PRIORIDAD
+                        if not tiene_numero_exacto:
+                            tiene_numero_cercano = False
+                            for num_busqueda in numeros_busqueda:
+                                num_busqueda_int = int(num_busqueda)
+                                for num_texto in nums_en_texto:
+                                    try:
+                                        num_texto_int = int(num_texto)
+                                        if abs(num_busqueda_int - num_texto_int) <= 30:  # Se consideran cercanos si difieren en 30 o menos
+                                            tiene_numero_cercano = True
+                                            break
+                                    except ValueError:
+                                        continue
+                    else:
+                        tiene_numero_exacto = True  # Si no hay números en la búsqueda, no penalizamos
+                        tiene_numero_cercano = True
+                    
+                    # Verificación estricta: todos los componentes clave deben estar presentes
+                    componentes_clave_encontrados = sum(1 for comp in componentes_clave if comp in texto_completo)
+                    porcentaje_clave = componentes_clave_encontrados / len(componentes_clave) if componentes_clave else 0
+                    
+                    # Contar cuántos componentes de la búsqueda están en los datos
+                    componentes_encontrados = sum(1 for comp in componentes if comp in texto_completo)
+                    calificacion_componentes = componentes_encontrados / len(componentes)
+                    
+                    # Calcular score final con mayor peso para números exactos
+                    similitud_score = similitud(texto_direccion_normalizado, texto_completo)
+                    
+                    # Ajustar score según coincidencia de números
+                    if tiene_numero_exacto:
+                        score_final = max(0.9, (0.4 * porcentaje_clave) + (0.3 * calificacion_componentes) + (0.3 * similitud_score))
+                    elif tiene_numero_cercano:
+                        score_final = max(0.75, (0.5 * porcentaje_clave) + (0.3 * calificacion_componentes) + (0.2 * similitud_score))
+                    else:
+                        score_final = (0.6 * porcentaje_clave) + (0.2 * calificacion_componentes) + (0.2 * similitud_score)
+                    
+                    # Filtrado estricto para resultados irrelevantes
+                    if (numeros_busqueda and not (tiene_numero_exacto or tiene_numero_cercano)) or porcentaje_clave < 0.5:
+                        continue  # Descartar resultados poco relevantes
+                    
+                    # Verificar si este resultado coincide "perfectamente"
+                    es_coincidencia_exacta = tiene_numero_exacto and porcentaje_clave >= 0.8
+                    
+                    # Almacenar todos los resultados con su puntuación para ordenarlos después
+                    if id_registro not in resultados_puntajes or score_final > resultados_puntajes[id_registro]:
+                        resumen = [f"{k}: {v}" for k, v in metadata.items() 
+                                  if k not in ['fuente', 'archivo', 'fila_excel'] and v]
+                        
+                        if es_coincidencia_exacta:
+                            resultados_exactos.append({
+                                'texto': f"Coincidencia exacta en {fuente}:\n" + "\n".join(resumen),
+                                'id': id_registro,
+                                'puntaje': score_final
+                            })
+                        
+                        todos_resultados.append({
+                            'texto': f"Coincidencia en {fuente} (relevancia: {score_final:.2f}):\n" + "\n".join(resumen),
                             'id': id_registro,
-                            'puntaje': 1.0  # Puntaje máximo para coincidencia exacta
+                            'puntaje': score_final
                         })
-                        resultados_puntajes[id_registro] = 1.0
-            except Exception as e:
-                print(f"Error en búsqueda exacta: {e}")
-            
-            # 3. Búsqueda por componentes individuales (solo si no hay resultados exactos)
-            if not resultados and not resultados_exactos:
-                # Campos relacionados con direcciones
-                campos_direccion = ['direccion', 'domicilio', 'calle', 'colonia', 'municipio', 'sector', 'cp', 'codigo postal']
-                
-                for campo in campos_direccion:
-                    for componente in componentes:
-                        if len(componente) < 3:  # Ignorar componentes muy cortos
-                            continue
-                            
-                        try:
-                            # Búsqueda por componente en el campo específico
-                            retriever = VectorIndexRetriever(index=index, similarity_top_k=5)
-                            nodes = retriever.retrieve(f"{campo} contiene {componente}")
-                            
-                            for node in nodes:
-                                metadata = node.node.metadata
-                                direccion_registro = normalizar_texto(str(metadata.get('direccion', '')))
-                                
-                                # Si no hay dirección, crear una con los campos disponibles
-                                if not direccion_registro:
-                                    partes_direccion = []
-                                    for key in ['domicilio', 'calle', 'numero', 'colonia', 'sector', 'municipio']:
-                                        if key in metadata and metadata[key]:
-                                            partes_direccion.append(str(metadata[key]))
-                                    direccion_registro = normalizar_texto(", ".join(partes_direccion))
-                                
-                                # Calcular similitud entre la dirección buscada y la encontrada
-                                similitud_score = similitud(texto_direccion_normalizado, direccion_registro)
-                                
-                                # Comprobar si contiene los componentes clave de la búsqueda
-                                componentes_encontrados = 0
-                                for comp in componentes:
-                                    if comp in direccion_registro:
-                                        componentes_encontrados += 1
-                                
-                                ratio_componentes = componentes_encontrados / len(componentes) if componentes else 0
-                                
-                                # Combinar puntuaciones
-                                puntaje_combinado = (similitud_score * 0.6) + (ratio_componentes * 0.4)
-                                
-                                # Verificar si este resultado contiene algún número de calle
-                                numeros_en_busqueda = [comp for comp in componentes if comp.isdigit()]
-                                numeros_en_resultado = re.findall(r'\d+', direccion_registro)
-                                
-                                # Ajustar puntaje basado en números coincidentes
-                                if numeros_en_busqueda and numeros_en_resultado:
-                                    for num_buscado in numeros_en_busqueda:
-                                        if num_buscado in numeros_en_resultado:
-                                            puntaje_combinado += 0.2  # Bonus por número exacto
-                                        else:
-                                            # Buscar números similares (cercanos)
-                                            for num_resultado in numeros_en_resultado:
-                                                if abs(int(num_buscado) - int(num_resultado)) <= 20:
-                                                    puntaje_combinado += 0.1  # Bonus menor por número cercano
-                                
-                                # Solo considerar si tiene al menos cierta relevancia
-                                if puntaje_combinado >= 0.5:  # Umbral reducido para mostrar más resultados
-                                    id_registro = str(metadata.get("id", "")) + str(metadata.get("fila_origen", ""))
-                                    
-                                    # Si ya tenemos este registro, actualizar solo si el puntaje es mejor
-                                    if id_registro in resultados_puntajes:
-                                        if puntaje_combinado > resultados_puntajes[id_registro]:
-                                            resultados_puntajes[id_registro] = puntaje_combinado
-                                            # Actualizar en la lista de resultados
-                                            for i, res in enumerate(resultados):
-                                                if res['id'] == id_registro:
-                                                    resumen = [f"{k}: {v}" for k, v in metadata.items() 
-                                                              if k not in ['fuente', 'archivo', 'fila_excel'] and v]
-                                                    resultados[i] = {
-                                                        'texto': f"Coincidencia en {fuente} (relevancia: {puntaje_combinado:.2f}):\n" + "\n".join(resumen),
-                                                        'id': id_registro,
-                                                        'puntaje': puntaje_combinado
-                                                    }
-                                    else:
-                                        resumen = [f"{k}: {v}" for k, v in metadata.items() 
-                                                   if k not in ['fuente', 'archivo', 'fila_excel'] and v]
-                                        resultados.append({
-                                            'texto': f"Coincidencia en {fuente} (relevancia: {puntaje_combinado:.2f}):\n" + "\n".join(resumen),
-                                            'id': id_registro,
-                                            'puntaje': puntaje_combinado
-                                        })
-                                        resultados_puntajes[id_registro] = puntaje_combinado
-                        except Exception as e:
-                            print(f"Error en búsqueda de componente '{componente}' en campo '{campo}': {e}")
-        
+                        resultados_puntajes[id_registro] = score_final
+                    
         except Exception as e:
             print(f"Error buscando en {fuente}: {e}")
             continue
     
-    # Si hay resultados exactos, mostrarlos primero
+    # Eliminar duplicados preservando el orden
+    resultados_unicos = []
+    ids_vistos = set()
+    
+    # Primero incluir los exactos
     if resultados_exactos:
-        return "\n\n".join([res['texto'] for res in resultados_exactos])
+        resultados_exactos = sorted(resultados_exactos, key=lambda x: x['puntaje'], reverse=True)
+        for res in resultados_exactos:
+            if res['id'] not in ids_vistos:
+                resultados_unicos.append(res)
+                ids_vistos.add(res['id'])
     
-    # Ordenar resultados por puntaje (de mayor a menor)
-    resultados_ordenados = sorted(resultados, key=lambda x: x['puntaje'], reverse=True)
+    # Luego incluir todos los demás ordenados por relevancia
+    todos_ordenados = sorted(todos_resultados, key=lambda x: x['puntaje'], reverse=True)
+    for res in todos_ordenados:
+        if res['id'] not in ids_vistos and res['puntaje'] >= 0.6:  # Filtrar más los resultados adicionales
+            resultados_unicos.append(res)
+            ids_vistos.add(res['id'])
     
-    # Limitar a los mejores resultados
-    resultados_ordenados = resultados_ordenados[:7]  # Aumentado a 7 para mostrar más opciones
+    # Limitar el número total de resultados (ahora usamos un umbral dinámico)
+    umbral_minimo_puntaje = 0.6  # Reducido para capturar más resultados potencialmente relevantes
+    resultados_finales = [res for res in resultados_unicos if res['puntaje'] >= umbral_minimo_puntaje]
+    
+    # Si no hay resultados con el umbral, mostrar al menos los mejores 2
+    if not resultados_finales and resultados_unicos:
+        resultados_finales = resultados_unicos[:2]
     
     # Formatear los resultados
-    if resultados_ordenados:
-        mensaje_inicial = "No se encontró una coincidencia exacta para la dirección solicitada. Estas son las direcciones más similares:\n\n"
+    if resultados_finales:
+        # Si hay resultados exactos, mostrarlos con un mensaje
+        if any('Coincidencia exacta' in res['texto'] for res in resultados_finales[:3]):
+            mensaje = "Se encontraron las siguientes coincidencias:\n\n"
+        else:
+            mensaje = "No se encontraron coincidencias exactas. Mostrando resultados similares:\n\n"
+        
         # Eliminar la información de puntaje para presentación al usuario
-        return mensaje_inicial + "\n\n".join([res['texto'] for res in resultados_ordenados])
+        textos_resultados = []
+        for res in resultados_finales:
+            # Quitar la parte de relevancia del texto
+            texto_limpio = re.sub(r'\(relevancia: \d+\.\d+\)', '', res['texto'])
+            textos_resultados.append(texto_limpio)
+        
+        return mensaje + "\n\n".join(textos_resultados)
     else:
-        return f"No se encontraron coincidencias para la dirección '{texto_direccion}'."
+        return f"No se encontraron coincidencias relevantes para la dirección '{texto_direccion}'."
 
 def similitud(texto1, texto2):
     return SequenceMatcher(None, texto1, texto2).ratio()
