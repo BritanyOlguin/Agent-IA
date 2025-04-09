@@ -907,24 +907,34 @@ while True:
         else:
             # 2. Si no es dirección compleja, verificar si es campo específico
             campo, valor = detectar_campo_valor(prompt)
-            
+
             if campo and valor:
                 print(f"[DEBUG] Campo y valor detectados: {campo}={valor}")
                 respuesta_herramienta = buscar_atributo(campo, valor, carpeta_indices=ruta_indices)
             else:
-                # 3. Para consultas simples, extraer el valor y buscar en múltiples campos
+                # 3. Para consultas simples, extraer el valor
                 valor_extraido = extraer_valor(prompt)
-                print(f"[DEBUG] Consulta simple detectada, valor extraído: '{valor_extraido}'")
-                
-                campos_disponibles = list(campos_detectados)
-                campos_probables = sugerir_campos(valor_extraido, campos_disponibles)
-                
-                respuesta_herramienta = buscar_campos_inteligente(valor_extraido, carpeta_indices=ruta_indices, campos_ordenados=campos_probables)
-                
-                # Si no hay resultados, intentar búsqueda por nombre
-                if "No se encontraron coincidencias" in respuesta_herramienta:
-                    print(f"[DEBUG] Intentando búsqueda por nombre")
-                    respuesta_herramienta = buscar_nombre(prompt)
+
+                # 3.1 Verificar si el valor extraído parece 'calle numero'
+                #     (una o más palabras seguidas de un número al final)
+                if re.match(r"(\b[a-zA-ZáéíóúüñÁÉÍÓÚÜÑ]+\s+)+\d+\b", valor_extraido.strip()):
+                    print(f"[DEBUG] Valor extraído '{valor_extraido}' parece calle+número, usando buscar_direccion_combinada.")
+                    # Usar la función más potente para este caso
+                    respuesta_herramienta = buscar_direccion_combinada(valor_extraido)
+                # 3.2 Si no parece 'calle numero', proceder con la lógica anterior
+                else:
+                    print(f"[DEBUG] Consulta simple detectada (no calle+número), valor extraído: '{valor_extraido}'")
+                    campos_disponibles = list(campos_detectados)
+                    campos_probables = sugerir_campos(valor_extraido, campos_disponibles)
+
+                    # Llamar a buscar_campos_inteligente (que usa ExactMatchFilter)
+                    respuesta_herramienta = buscar_campos_inteligente(valor_extraido, carpeta_indices=ruta_indices, campos_ordenados=campos_probables)
+
+                    # Si no hay resultados con buscar_campos_inteligente, intentar búsqueda por nombre
+                    if "No se encontraron coincidencias" in respuesta_herramienta:
+                        print(f"[DEBUG] Intentando búsqueda por nombre como fallback final para consulta simple.")
+                        # Usar el prompt original para buscar_nombre puede ser más robusto
+                        respuesta_herramienta = buscar_nombre(prompt)
 
         print(f"\n📄Resultado:\n{respuesta_herramienta}\n")
 
