@@ -24,6 +24,15 @@ ruta_modelo_embeddings = r"C:\Users\Sistemas\Documents\OKIP\models\models--intfl
 ruta_indices = r"C:\Users\Sistemas\Documents\OKIP\llama_index_indices"
 ruta_modelo_llama3 = r"C:\Users\Sistemas\Documents\OKIP\models\models--meta-llama--Meta-Llama-3-8B-Instruct"
 
+# --- Constantes para buscar_direccion_combinada ---
+CAMPOS_DIRECCION = ['domicilio', 'calle', 'numero', 'colonia', 'sector', 'municipio', 'ciudad', 'estado', 'cp', 'direccion', 'campo14', 'domicilio calle', 'codigo postal', 'edo de origen']
+CAMPOS_BUSQUEDA_EXACTA = ['domicilio', 'direccion', 'calle']
+STOP_WORDS = {'de', 'la', 'del', 'los', 'las', 'y', 'a', 'en', 'el', 'col', 'colonia', 'cp', 'sector', 'calzada', 'calz', 'boulevard', 'blvd', 'avenida', 'ave', 'av'}
+UMBRAL_PUNTAJE_MINIMO = 0.55
+SIMILARITY_TOP_K_DIRECCION = 15
+MAX_RESULTADOS_FINALES = 10
+TOLERANCIA_NUMERO_CERCANO = 50
+
 # CONFIGURACIÓN DE DISPOSITIVO Y LLM
 device = "cuda" if torch.cuda.is_available() else "cpu"
 if device == "cpu":
@@ -417,249 +426,253 @@ def buscar_campos_similares(valor: str, campos: list[str], carpeta_indices: str)
     
 def buscar_direccion_combinada(texto_direccion: str) -> str:
     """
-    Busca coincidencias semánticas de dirección en todos los índices.
-    Maneja direcciones combinadas como "ZOQUIPAN 1260, LAGOS DEL COUNTRY"
-    descomponiéndolas en partes para mejorar la búsqueda.
+    Busca coincidencias de dirección combinando búsqueda exacta por metadatos
+    y búsqueda semántica con evaluación de componentes.
+
+    Prioriza coincidencias exactas de "calle número", pero también busca
+    coincidencias semánticas y evalúa relevancia basada en componentes
+    y similitud numérica/textual en todos los índices.
     """
     print(f"\nBuscando dirección combinada: '{texto_direccion}'")
-    
-    # Normalizar la dirección de búsqueda
+
+    # 1. Preprocesamiento y Extracción de Componentes
     texto_direccion_normalizado = normalizar_texto(texto_direccion)
-    
-    # Preprocesar para separar números pegados a texto (como "malva101" -> "malva 101")
-    texto_direccion_normalizado = re.sub(r'([a-zA-Z])(\d+)', r'\1 \2', texto_direccion_normalizado)
-    
-    # Dividir la dirección en componentes (calle, número, colonia, etc.)
-    componentes = re.split(r'[,\s]+', texto_direccion_normalizado)
-    componentes = [c for c in componentes if c and len(c) > 1]  # Eliminar componentes vacíos y muy cortos
-    
-    # Identificar posibles números de calle en la búsqueda
+    texto_direccion_normalizado = re.sub(r'([a-zA-ZáéíóúüñÁÉÍÓÚÜÑ])(\d+)', r'\1 \2', texto_direccion_normalizado)
+    texto_direccion_normalizado = re.sub(r'(\d+)([a-zA-ZáéíóúüñÁÉÍÓÚÜÑ])', r'\1 \2', texto_direccion_normalizado)
+
+    componentes_raw = re.split(r'[,\s]+', texto_direccion_normalizado)
+    componentes = [c for c in componentes_raw if c and len(c) > 1]
+
     numeros_busqueda = [comp for comp in componentes if comp.isdigit()]
-    calles_busqueda = [comp for comp in componentes if not comp.isdigit() and not comp in ['de', 'la', 'del', 'los', 'las', 'y', 'a', 'en', 'el']]
-    
-    # Extraer componentes clave para el filtrado estricto posterior
-    componentes_clave = [comp for comp in componentes if not comp in ['de', 'la', 'del', 'los', 'las', 'y', 'a', 'en', 'el']]
-    
-    # Imprimir los componentes para depuración
-    print(f"[DEBUG] Componentes de búsqueda: {componentes}")
-    if numeros_busqueda:
-        print(f"[DEBUG] Números detectados: {numeros_busqueda}")
-    if calles_busqueda:
-        print(f"[DEBUG] Calles/colonias: {calles_busqueda}")
-    
-    # Almacenar todos los resultados encontrados
-    todos_resultados = []
-    resultados_exactos = []
-    resultados_puntajes = {}  # Para rastrear la relevancia de cada resultado
-    
-    # Bandera para saber si ya se encontraron coincidencias exactas por número
-    encontrado_por_numero = False
-    
-    # Buscar en todos los índices
-    for nombre_dir in os.listdir(ruta_indices):
-        ruta_indice = os.path.join(ruta_indices, nombre_dir)
-        if not os.path.isdir(ruta_indice) or not os.path.exists(os.path.join(ruta_indice, "docstore.json")):
-            continue
-            
-        fuente = nombre_dir.replace("index_", "")
-        
+    calles_colonias_busqueda = [comp for comp in componentes if not comp.isdigit() and comp not in STOP_WORDS]
+    componentes_clave = [comp for comp in componentes if comp not in STOP_WORDS]
+
+    combinacion_principal = None
+    combinacion_principal_norm = None
+    if calles_colonias_busqueda and numeros_busqueda:
+        combinacion_principal = f"{calles_colonias_busqueda[0]} {numeros_busqueda[0]}"
+        combinacion_principal_norm = normalizar_texto(combinacion_principal)
+
+    # 2. Almacenamiento de Resultados
+    todos_resultados_detalle: Dict[str, Dict[str, Any]] = {}
+
+    # 3. Búsqueda Iterativa en Todos los Índices
+    # (Usamos los índices ya cargados en la variable global `indices`)
+    for fuente, index in indices.items(): # Itera sobre los índices ya cargados
         try:
-            # Cargar el índice
-            storage_context = StorageContext.from_defaults(persist_dir=ruta_indice)
-            index = load_index_from_storage(storage_context)
-            
-            # 1. Búsqueda ESPECÍFICA primero por número exacto si existe en la consulta
-            if numeros_busqueda and calles_busqueda:
-                # Buscar combinación de calle y número exacto - MUY ALTA PRIORIDAD
-                for calle in calles_busqueda[:2]:  # Considerar solo hasta 2 primeras posibles calles
-                    for numero in numeros_busqueda:
+            # --- Estrategia 1: Búsqueda Exacta por Metadatos ---
+            if combinacion_principal_norm:
+                #print(f"[DEBUG] Intentando búsqueda exacta por metadatos para '{combinacion_principal_norm}' en {fuente}...")
+                for campo_exacto in CAMPOS_BUSQUEDA_EXACTA:
+                    campo_norm = normalizar_texto(campo_exacto)
+                    try:
+                        filters = MetadataFilters(filters=[
+                            ExactMatchFilter(key=campo_norm, value=combinacion_principal_norm)
+                        ])
+                        retriever_exacto = VectorIndexRetriever(
+                            index=index,
+                            similarity_top_k=5,
+                            filters=filters
+                        )
+                        nodes_exactos = retriever_exacto.retrieve(combinacion_principal) # Query simple, el filtro manda
+
+                        if nodes_exactos:
+                            #print(f"[DEBUG] Éxito en búsqueda exacta en campo '{campo_exacto}'. {len(nodes_exactos)} nodos.")
+                            for node in nodes_exactos:
+                                metadata = node.node.metadata
+                                id_registro = str(metadata.get("id", "")) + str(metadata.get("fila_origen", ""))
+                                if not id_registro: id_registro = node.node.node_id
+
+                                puntaje_actual = todos_resultados_detalle.get(id_registro, {}).get('puntaje', -1.0)
+                                puntaje_nuevo = 1.0 # Máxima prioridad
+
+                                if puntaje_nuevo > puntaje_actual:
+                                    resumen = [f"{k}: {v}" for k, v in metadata.items()
+                                               if k not in ['fuente', 'archivo', 'fila_excel'] and v]
+                                    todos_resultados_detalle[id_registro] = {
+                                        'texto_base': f"Coincidencia exacta directa en {fuente}:\n" + "\n".join(resumen),
+                                        'puntaje': puntaje_nuevo,
+                                        'fuente': fuente,
+                                        'id': id_registro,
+                                        'metadata': metadata,
+                                        'tipo': 'exacta_directa'
+                                    }
+
+
+                    except Exception as e_filter:
+                        # Silencioso si el campo no existe en los metadatos de este índice
+                        if 'Metadata key' not in str(e_filter):
+                            print(f"[WARN] Error en búsqueda exacta por filtro en campo '{campo_exacto}' en {fuente}: {e_filter}")
+
+            # --- Estrategia 2: Búsqueda Semántica y Evaluación ---
+            #print(f"[DEBUG] Realizando búsqueda semántica general en {fuente}...")
+            retriever_semantico = VectorIndexRetriever(
+                index=index,
+                similarity_top_k=SIMILARITY_TOP_K_DIRECCION # Usar constante específica
+            )
+            consulta_semantica = " ".join(componentes_clave[:5])
+            if not consulta_semantica: consulta_semantica = texto_direccion_normalizado
+
+            nodes_semanticos = retriever_semantico.retrieve(consulta_semantica)
+            #print(f"[DEBUG] Búsqueda semántica encontró {len(nodes_semanticos)} nodos iniciales.")
+
+            for node in nodes_semanticos:
+                metadata = node.node.metadata
+                id_registro = str(metadata.get("id", "")) + str(metadata.get("fila_origen", ""))
+                if not id_registro: id_registro = node.node.node_id
+
+                puntaje_actual = todos_resultados_detalle.get(id_registro, {}).get('puntaje', -1.0)
+
+                if puntaje_actual == 1.0: # Ya es perfecta, no evaluar más
+                    continue
+
+                texto_completo_registro = ""
+                # Usar CAMPOS_DIRECCION definido globalmente
+                for k, v in metadata.items():
+                    if k in CAMPOS_DIRECCION:
+                        texto_completo_registro += f" {v}"
+                texto_completo_registro_norm = normalizar_texto(texto_completo_registro)
+
+                if not texto_completo_registro_norm: # Si no hay campos de dirección, saltar
+                    continue
+
+                # Evaluación de Relevancia
+                tiene_numero_exacto = False
+                tiene_numero_cercano = False
+                numeros_en_registro = re.findall(r'\b\d+\b', texto_completo_registro_norm)
+
+                if numeros_busqueda:
+                    num_b_str = numeros_busqueda[0] # Considerar el primer número
+                    if num_b_str in numeros_en_registro:
+                        tiene_numero_exacto = True
+                    else:
                         try:
-                            # Búsqueda específica en metadatos
-                            for metadata_key in ['domicilio', 'calle', 'direccion']:
-                                # Buscar por componentes combinados (calle + número)
-                                retriever = VectorIndexRetriever(index=index, similarity_top_k=5)
-                                consulta_especifica = f"{calle} {numero}"
-                                nodes = retriever.retrieve(consulta_especifica)
-                                
-                                for node in nodes:
-                                    metadata = node.node.metadata
-                                    
-                                    # Verificar coincidencia de número exacto en algún campo de dirección
-                                    tiene_numero_exacto = False
-                                    tiene_calle = False
-                                    
-                                    # Buscar el número exacto y la calle en cualquier campo de dirección
-                                    for k, v in metadata.items():
-                                        if k in ['domicilio', 'calle', 'numero', 'direccion']:
-                                            # Extraer posibles números en este campo
-                                            nums_en_campo = re.findall(r'\d+', str(v))
-                                            if numero in nums_en_campo:
-                                                tiene_numero_exacto = True
-                                            if calle.lower() in str(v).lower():
-                                                tiene_calle = True
-                                    
-                                    # Si contiene tanto el número exacto como la calle, es una coincidencia muy relevante
-                                    if tiene_numero_exacto and tiene_calle:
-                                        encontrado_por_numero = True
-                                        id_registro = str(metadata.get("id", "")) + str(metadata.get("fila_origen", ""))
-                                        
-                                        if id_registro not in resultados_puntajes or 1.0 > resultados_puntajes[id_registro]:
-                                            resumen = [f"{k}: {v}" for k, v in metadata.items() 
-                                                       if k not in ['fuente', 'archivo', 'fila_excel'] and v]
-                                            
-                                            resultados_exactos.append({
-                                                'texto': f"Coincidencia exacta en {fuente}:\n" + "\n".join(resumen),
-                                                'id': id_registro,
-                                                'puntaje': 1.0
-                                            })
-                                            resultados_puntajes[id_registro] = 1.0
-                        except Exception as e:
-                            print(f"Error en búsqueda de combinación exacta: {e}")
-            
-            # 2. Si no se encontraron coincidencias exactas por número, hacer búsqueda semántica
-            if not encontrado_por_numero:
-                # Búsqueda semántica amplia
-                retriever = VectorIndexRetriever(index=index, similarity_top_k=10)
-                
-                # Construir una consulta que incluya todos los componentes principales
-                consulta = " ".join(componentes[:4]) if len(componentes) > 4 else texto_direccion_normalizado 
-                nodes = retriever.retrieve(consulta)
-                
-                for node in nodes:
-                    metadata = node.node.metadata
-                    id_registro = str(metadata.get("id", "")) + str(metadata.get("fila_origen", ""))
-                    
-                    # Construir un texto completo con todos los campos de dirección para búsqueda
-                    texto_completo = ""
-                    campos_direccion_valores = {}
-                    
-                    for k, v in metadata.items():
-                        if k in ['domicilio', 'calle', 'numero', 'colonia', 'sector', 'municipio', 'ciudad', 'estado', 'cp', 'direccion']:
-                            texto_completo += f" {v}"
-                            campos_direccion_valores[k] = str(v)
-                    
-                    texto_completo = normalizar_texto(texto_completo)
-                    
-                    # Verificación de números exactos - ALTA PRIORIDAD
-                    if numeros_busqueda:
-                        tiene_numero_exacto = False
-                        for num in numeros_busqueda:
-                            nums_en_texto = re.findall(r'\b\d+\b', texto_completo)
-                            if num in nums_en_texto:
-                                tiene_numero_exacto = True
-                                break
-                        
-                        # Verificación de números cercanos - MEDIA PRIORIDAD
-                        if not tiene_numero_exacto:
-                            tiene_numero_cercano = False
-                            for num_busqueda in numeros_busqueda:
-                                num_busqueda_int = int(num_busqueda)
-                                for num_texto in nums_en_texto:
-                                    try:
-                                        num_texto_int = int(num_texto)
-                                        if abs(num_busqueda_int - num_texto_int) <= 30:  # Se consideran cercanos si difieren en 30 o menos
-                                            tiene_numero_cercano = True
-                                            break
-                                    except ValueError:
-                                        continue
+                            num_b_int = int(num_b_str)
+                            for num_r_str in numeros_en_registro:
+                                try:
+                                    num_r_int = int(num_r_str)
+                                    # Usar constante TOLERANCIA_NUMERO_CERCANO
+                                    if abs(num_b_int - num_r_int) <= TOLERANCIA_NUMERO_CERCANO:
+                                        tiene_numero_cercano = True
+                                        break
+                                except ValueError: continue
+                        except ValueError: pass
+                else: # Si no se busca número, no penalizar
+                    tiene_numero_exacto = True
+                    tiene_numero_cercano = True
+
+                # Componentes clave
+                componentes_clave_encontrados = sum(1 for comp in componentes_clave if comp in texto_completo_registro_norm)
+                porcentaje_clave = componentes_clave_encontrados / len(componentes_clave) if componentes_clave else 1.0
+
+                # Todos los componentes
+                componentes_encontrados = sum(1 for comp in componentes if comp in texto_completo_registro_norm)
+                calificacion_componentes = componentes_encontrados / len(componentes) if componentes else 1.0
+
+                # Similitud textual
+                similitud_textual = similitud(texto_direccion_normalizado, texto_completo_registro_norm)
+
+                # Calcular Score Final
+                score_final = 0.0
+                # Pesos ajustados para dar más importancia al número y componentes clave
+                peso_num_exacto = 0.50
+                peso_num_cercano = 0.20
+                peso_clave = 0.35 # Aumentado
+                peso_componentes = 0.05 # Disminuido
+                peso_similitud = 0.10
+
+                if tiene_numero_exacto:
+                    score_final = (peso_num_exacto * 1.0) + (peso_clave * porcentaje_clave) + \
+                                  (peso_componentes * calificacion_componentes) + (peso_similitud * similitud_textual)
+                    # Boost adicional si la primera calle/colonia coincide
+                    if calles_colonias_busqueda and calles_colonias_busqueda[0] in texto_completo_registro_norm:
+                        score_final = min(0.99, score_final * 1.1) # Pequeño boost sin llegar a 1.0
+                elif tiene_numero_cercano:
+                    score_final = (peso_num_cercano * 1.0) + (peso_clave * porcentaje_clave) + \
+                                  (peso_componentes * calificacion_componentes) + (peso_similitud * similitud_textual)
+                    score_final *= 0.85 # Penalizar un poco
+                else: # Sin número o muy diferente
+                    if porcentaje_clave > 0.6: # Solo si hay buena coincidencia de texto
+                        score_final = (peso_clave * porcentaje_clave) + \
+                                      (peso_componentes * calificacion_componentes) + (peso_similitud * similitud_textual)
+                        score_final *= 0.65 # Penalizar más
                     else:
-                        tiene_numero_exacto = True  # Si no hay números en la búsqueda, no penalizamos
-                        tiene_numero_cercano = True
-                    
-                    # Verificación estricta: todos los componentes clave deben estar presentes
-                    componentes_clave_encontrados = sum(1 for comp in componentes_clave if comp in texto_completo)
-                    porcentaje_clave = componentes_clave_encontrados / len(componentes_clave) if componentes_clave else 0
-                    
-                    # Contar cuántos componentes de la búsqueda están en los datos
-                    componentes_encontrados = sum(1 for comp in componentes if comp in texto_completo)
-                    calificacion_componentes = componentes_encontrados / len(componentes)
-                    
-                    # Calcular score final con mayor peso para números exactos
-                    similitud_score = similitud(texto_direccion_normalizado, texto_completo)
-                    
-                    # Ajustar score según coincidencia de números
-                    if tiene_numero_exacto:
-                        score_final = max(0.9, (0.4 * porcentaje_clave) + (0.3 * calificacion_componentes) + (0.3 * similitud_score))
-                    elif tiene_numero_cercano:
-                        score_final = max(0.75, (0.5 * porcentaje_clave) + (0.3 * calificacion_componentes) + (0.2 * similitud_score))
-                    else:
-                        score_final = (0.6 * porcentaje_clave) + (0.2 * calificacion_componentes) + (0.2 * similitud_score)
-                    
-                    # Filtrado estricto para resultados irrelevantes
-                    if (numeros_busqueda and not (tiene_numero_exacto or tiene_numero_cercano)) or porcentaje_clave < 0.5:
-                        continue  # Descartar resultados poco relevantes
-                    
-                    # Verificar si este resultado coincide "perfectamente"
-                    es_coincidencia_exacta = tiene_numero_exacto and porcentaje_clave >= 0.8
-                    
-                    # Almacenar todos los resultados con su puntuación para ordenarlos después
-                    if id_registro not in resultados_puntajes or score_final > resultados_puntajes[id_registro]:
-                        resumen = [f"{k}: {v}" for k, v in metadata.items() 
-                                  if k not in ['fuente', 'archivo', 'fila_excel'] and v]
-                        
-                        if es_coincidencia_exacta:
-                            resultados_exactos.append({
-                                'texto': f"Coincidencia exacta en {fuente}:\n" + "\n".join(resumen),
-                                'id': id_registro,
-                                'puntaje': score_final
-                            })
-                        
-                        todos_resultados.append({
-                            'texto': f"Coincidencia en {fuente} (relevancia: {score_final:.2f}):\n" + "\n".join(resumen),
-                            'id': id_registro,
-                            'puntaje': score_final
-                        })
-                        resultados_puntajes[id_registro] = score_final
-                    
-        except Exception as e:
-            print(f"Error buscando en {fuente}: {e}")
+                        score_final = 0.0 # Relevancia muy baja
+
+                # Filtrado Estricto
+                if numeros_busqueda and not (tiene_numero_exacto or tiene_numero_cercano):
+                    #print(f"[DEBUG] Descartado {id_registro} (semántico): Número buscado no encontrado.")
+                    continue
+                if porcentaje_clave < 0.4 and not tiene_numero_exacto: # Umbral bajo de componentes clave
+                    #print(f"[DEBUG] Descartado {id_registro} (semántico): Pocos componentes clave ({porcentaje_clave:.2f}).")
+                    continue
+                # Usar constante UMBRAL_PUNTAJE_MINIMO
+                if score_final < (UMBRAL_PUNTAJE_MINIMO - 0.1): # Un poco más permisivo aquí
+                     #print(f"[DEBUG] Descartado {id_registro} (semántico): Score bajo ({score_final:.2f}).")
+                     continue
+
+                # Almacenar si es Mejor que el Existente
+                if score_final > puntaje_actual:
+                    tipo_resultado = "exacta_semantica" if tiene_numero_exacto and porcentaje_clave >= 0.8 else \
+                                     "cercana_semantica" if tiene_numero_cercano else \
+                                     "similar_semantica"
+
+                    resumen = [f"{k}: {v}" for k, v in metadata.items()
+                               if k not in ['fuente', 'archivo', 'fila_excel'] and v]
+
+                    texto_display = f"Coincidencia ({tipo_resultado.replace('_', ' ')}) en {fuente} (Score: {score_final:.2f}):\n" + "\n".join(resumen)
+
+                    todos_resultados_detalle[id_registro] = {
+                        'texto_base': texto_display,
+                        'puntaje': score_final,
+                        'fuente': fuente,
+                        'id': id_registro,
+                        'metadata': metadata,
+                        'tipo': tipo_resultado
+                    }
+
+        except Exception as e_index:
+            print(f"[ERROR] Error procesando el índice {fuente}: {e_index}")
+            # import traceback # Descomentar para depuración profunda
+            # traceback.print_exc()
             continue
-    
-    # Eliminar duplicados preservando el orden
-    resultados_unicos = []
-    ids_vistos = set()
-    
-    # Primero incluir los exactos
-    if resultados_exactos:
-        resultados_exactos = sorted(resultados_exactos, key=lambda x: x['puntaje'], reverse=True)
-        for res in resultados_exactos:
-            if res['id'] not in ids_vistos:
-                resultados_unicos.append(res)
-                ids_vistos.add(res['id'])
-    
-    # Luego incluir todos los demás ordenados por relevancia
-    todos_ordenados = sorted(todos_resultados, key=lambda x: x['puntaje'], reverse=True)
-    for res in todos_ordenados:
-        if res['id'] not in ids_vistos and res['puntaje'] >= 0.6:  # Filtrar más los resultados adicionales
-            resultados_unicos.append(res)
-            ids_vistos.add(res['id'])
-    
-    # Limitar el número total de resultados (ahora usamos un umbral dinámico)
-    umbral_minimo_puntaje = 0.6  # Reducido para capturar más resultados potencialmente relevantes
-    resultados_finales = [res for res in resultados_unicos if res['puntaje'] >= umbral_minimo_puntaje]
-    
-    # Si no hay resultados con el umbral, mostrar al menos los mejores 2
-    if not resultados_finales and resultados_unicos:
-        resultados_finales = resultados_unicos[:2]
-    
-    # Formatear los resultados
-    if resultados_finales:
-        # Si hay resultados exactos, mostrarlos con un mensaje
-        if any('Coincidencia exacta' in res['texto'] for res in resultados_finales[:3]):
-            mensaje = "Se encontraron las siguientes coincidencias:\n\n"
-        else:
-            mensaje = "No se encontraron coincidencias exactas. Mostrando resultados similares:\n\n"
-        
-        # Eliminar la información de puntaje para presentación al usuario
-        textos_resultados = []
-        for res in resultados_finales:
-            # Quitar la parte de relevancia del texto
-            texto_limpio = re.sub(r'\(relevancia: \d+\.\d+\)', '', res['texto'])
-            textos_resultados.append(texto_limpio)
-        
-        return mensaje + "\n\n".join(textos_resultados)
-    else:
+
+    # 4. Consolidación y Formateo Final
+    if not todos_resultados_detalle:
         return f"No se encontraron coincidencias relevantes para la dirección '{texto_direccion}'."
+
+    resultados_ordenados = sorted(todos_resultados_detalle.values(), key=lambda x: x['puntaje'], reverse=True)
+
+    # Usar constante UMBRAL_PUNTAJE_MINIMO
+    resultados_filtrados = [res for res in resultados_ordenados if res['puntaje'] >= UMBRAL_PUNTAJE_MINIMO]
+
+    # Si el filtro estricto no dejó nada, mostrar los mejores aunque no lleguen al umbral
+    if not resultados_filtrados and resultados_ordenados:
+        resultados_finales = resultados_ordenados[:2] # Mostrar los 2 mejores
+        mensaje_intro = "No se encontraron coincidencias muy relevantes. Mostrando los más cercanos:\n\n"
+    elif not resultados_filtrados and not resultados_ordenados:
+         return f"No se encontraron coincidencias relevantes para la dirección '{texto_direccion}'."
+    else:
+        # Usar constante MAX_RESULTADOS_FINALES
+        resultados_finales = resultados_filtrados[:MAX_RESULTADOS_FINALES]
+        tipos_encontrados = {res['tipo'] for res in resultados_finales}
+        if 'exacta_directa' in tipos_encontrados or 'exacta_semantica' in tipos_encontrados:
+             mensaje_intro = "Se encontraron las siguientes coincidencias:\n\n"
+        elif 'cercana_semantica' in tipos_encontrados:
+             mensaje_intro = "No se encontraron coincidencias exactas. Mostrando direcciones con números/componentes similares:\n\n"
+        else:
+             mensaje_intro = "No se encontraron coincidencias muy precisas. Mostrando los resultados más similares:\n\n"
+
+
+    textos_resultados = []
+    for res in resultados_finales:
+        texto_limpio = re.sub(r'\s*\(Score: \d+\.\d+\)', '', res['texto_base']).strip() # Limpiar score
+        # Podrías añadir aquí lógica para reordenar los campos del resumen si quisieras
+        textos_resultados.append(texto_limpio)
+
+    return mensaje_intro + "\n\n".join(textos_resultados) # Separador más claro
+
+# --- FIN DE LA FUNCIÓN COMBINADA ---
 
 def similitud(texto1, texto2):
     return SequenceMatcher(None, texto1, texto2).ratio()
@@ -846,14 +859,14 @@ all_tools.insert(1, buscar_por_atributo_tool)
 
 # Crear herramienta para búsqueda de dirección combinada
 buscar_direccion_tool = FunctionTool.from_defaults(
-    fn=buscar_direccion_combinada,
+    fn=buscar_direccion_combinada, # Asegúrate que apunta a la nueva función
     name="buscar_direccion_combinada",
     description=(
-        "Usa esta herramienta cuando el usuario busca una dirección completa o parcial. "
+        "Usa esta herramienta cuando el usuario busca una dirección completa o parcial que contenga calle, número y posiblemente colonia o ciudad. "
         "Es especialmente útil para direcciones combinadas como 'ZOQUIPAN 1260, LAGOS DEL COUNTRY'. "
-        "Por ejemplo: '¿De quién es esta dirección: ZOQUIPAN 1260, LAGOS DEL COUNTRY?', "
-        "'Busca ZOQUIPAN 1260', 'Quién vive en casa #63, Zapopan', 'Quién vive en ZAPOPAN, DF', etc. "
-        "Esta herramienta realiza búsquedas semánticas en componentes de dirección."
+        "Por ejemplo: '¿De quién es esta dirección: ZOQUIPAN 1260, LAGOS DEL COUNTRY, ZAPOPAN?', "
+        "'Busca Malva 101, San Luis de la Paz', 'Quién vive en casa #63, colinas del rey, Zapopan', 'información de zoquipan 1260'. "
+        "Esta herramienta realiza búsquedas semánticas y exactas en componentes de dirección."
     )
 )
 
@@ -889,7 +902,6 @@ while True:
         if es_consulta_direccion(prompt):
             # Es una dirección compleja, usar búsqueda por dirección combinada
             texto_direccion = extraer_texto_direccion(prompt)
-            print(f"[DEBUG] Consulta de dirección compleja detectada: '{texto_direccion}'")
             
             respuesta_herramienta = buscar_direccion_combinada(texto_direccion)
         else:
