@@ -241,6 +241,7 @@ for archivo_nombre in os.listdir(carpeta_bd):
 
             # Generar campo direccion_completa
             componentes_direccion = []
+            componentes_encontrados = {}
             campos_direccion = ['calle', 'domicilio', 'numero', 'campo 14', 'colonia', 'cp', 'codigo postal', 'municipio', 'ciudad', 'sector', 'estado', 'edo de origen', 'entidad']
 
             for campo in campos_direccion:
@@ -248,9 +249,31 @@ for archivo_nombre in os.listdir(carpeta_bd):
                     if campo in col:
                         valor = datos_fila_limpios[col]
                         if valor and valor.lower() != "nan":
-                            componentes_direccion.append(valor)
+                            componentes_encontrados[campo] = valor
 
-            direccion_completa = ", ".join(componentes_direccion) if componentes_direccion else None
+            direccion_partes = []
+
+            if 'domicilio' in componentes_encontrados:
+                domicilio = componentes_encontrados['domicilio']
+                # Si hay un número, añadirlo con espacio
+                if 'numero' in componentes_encontrados:
+                    domicilio += " " + componentes_encontrados['numero']
+                    componentes_encontrados.pop('numero')  # Eliminar número para no agregarlo dos veces
+                direccion_partes.append(domicilio)
+            elif 'calle' in componentes_encontrados:
+                calle = componentes_encontrados['calle']
+                # Si hay un número, añadirlo con espacio
+                if 'numero' in componentes_encontrados:
+                    calle += " " + componentes_encontrados['numero']
+                    componentes_encontrados.pop('numero')  # Eliminar número para no agregarlo dos veces
+                direccion_partes.append(calle)
+
+            for campo in campos_direccion:
+                if campo not in ['domicilio', 'calle', 'numero'] and campo in componentes_encontrados:
+                    direccion_partes.append(componentes_encontrados[campo])
+
+            # Unir todos los componentes con comas
+            direccion_completa = ", ".join(direccion_partes) if direccion_partes else None
 
             if direccion_completa:
                 direccion_completa = normalizar_texto(direccion_completa)
