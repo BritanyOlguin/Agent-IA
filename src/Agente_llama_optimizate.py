@@ -14,6 +14,8 @@ from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter
 from llama_index.core.retrievers import VectorIndexRetriever
 from llama_index.core import StorageContext, load_index_from_storage
 from typing import Dict, Any, List
+from transformers import pipeline
+import json
 import sys
 # Importar la función normalizar_texto desde normalizar_texto.py
 sys.path.append(r"C:\Users\Sistemas\Documents\OKIP\src")
@@ -478,6 +480,34 @@ for campo in campos_detectados:
         mapa_campos[campo] = campo
         campos_clave.setdefault(campo, []).append(campo)
 
+llm_clasificador = pipeline("text-generation", model=model, tokenizer=tokenizer)
+
+def interpretar_pregunta_llm(prompt: str) -> dict:
+    system_prompt = (
+        "Eres un asistente que analiza preguntas del usuario. Tu tarea es extraer:\n"
+        "- 'tipo_busqueda': puede ser 'nombre', 'direccion' o 'atributo'.\n"
+        "- 'campo': si aplica, como 'telefono', 'municipio', etc.\n"
+        "- 'valor': el dato específico mencionado en la pregunta.\n\n"
+        f"Pregunta: {prompt}\n"
+        "Responde solo con un JSON válido. No agregues explicaciones ni comentarios."
+    )
+    
+    salida_cruda = llm_clasificador(system_prompt, max_new_tokens=256, return_full_text=False)[0]['generated_text']
+    
+    # Buscar JSON limpio
+    try:
+        match = re.search(r'\{[\s\S]*?\}', salida_cruda)
+        if match:
+            json_text = match.group(0)
+            return json.loads(json_text)
+        else:
+            print("[⚠️ LLM] No se detectó JSON válido.")
+    except Exception as e:
+        print(f"[⚠️ LLM] Error al decodificar JSON: {e}")
+
+    # Fallback: interpreta que es desconocido
+    return {"tipo_busqueda": "desconocido", "valor": prompt}
+
 # --- 3) HERRAMIENTA 1: BUSCAR POR NOMBRE COMPLETO ---
 def buscar_nombre(query: str) -> str:
     print(f"Ejecutando búsqueda de nombre: '{query}'")
@@ -881,7 +911,7 @@ try:
     agent = ReActAgent.from_tools(
         tools=all_tools,
         llm=llm,
-        verbose=False  # MUESTRA LOS PASOS DE PENSAMIENTO DEL AGENTE
+        verbose=False
     )
     print("Agente creado correctamente.")
 except Exception as e:
@@ -890,7 +920,6 @@ except Exception as e:
 
 print("\n🤖 Agente listo. Escribe tu pregunta o 'salir' para terminar.")
 
-# CICLO DE CHAT MEJORADO
 while True:
     prompt = input("Pregunta: ")
     if prompt.lower() == 'salir':
@@ -899,43 +928,26 @@ while True:
         continue
 
     try:
-        # 1. Verificar si es una consulta de dirección compleja
-        if es_consulta_direccion(prompt):
-            # Es una dirección compleja, usar búsqueda por dirección combinada
-            texto_direccion = extraer_texto_direccion(prompt)
-            
-            respuesta_herramienta = buscar_direccion_combinada(texto_direccion)
+        analisis = interpretar_pregunta_llm(prompt)
+        tipo = analisis.get("tipo_busqueda")
+        campo = analisis.get("campo")
+        valor = analisis.get("valor")
+
+        if tipo == "direccion":
+            respuesta_herramienta = buscar_direccion_combinada(valor)
+
+        elif tipo == "atributo" and campo and valor:
+            print(f"[LLM] Campo detectado: {campo} = {valor}")
+            respuesta_herramienta = buscar_atributo(campo, valor, carpeta_indices=ruta_indices)
+
+        elif tipo == "nombre" and valor:
+            respuesta_herramienta = buscar_nombre(valor)
+
         else:
-            # 2. Si no es dirección compleja, verificar si es campo específico
-            campo, valor = detectar_campo_valor(prompt)
-
-            if campo and valor:
-                print(f"[DEBUG] Campo y valor detectados: {campo}={valor}")
-                respuesta_herramienta = buscar_atributo(campo, valor, carpeta_indices=ruta_indices)
-            else:
-                # 3. Para consultas simples, extraer el valor
-                valor_extraido = extraer_valor(prompt)
-
-                # 3.1 Verificar si el valor extraído parece 'calle numero'
-                #     (una o más palabras seguidas de un número al final)
-                if re.match(r"(\b[a-zA-ZáéíóúüñÁÉÍÓÚÜÑ]+\s+)+\d+\b", valor_extraido.strip()):
-                    print(f"[DEBUG] Valor extraído '{valor_extraido}' parece calle+número, usando buscar_direccion_combinada.")
-                    # Usar la función más potente para este caso
-                    respuesta_herramienta = buscar_direccion_combinada(valor_extraido)
-                # 3.2 Si no parece 'calle numero', proceder con la lógica anterior
-                else:
-                    print(f"[DEBUG] Consulta simple detectada (no calle+número), valor extraído: '{valor_extraido}'")
-                    campos_disponibles = list(campos_detectados)
-                    campos_probables = sugerir_campos(valor_extraido, campos_disponibles)
-
-                    # Llamar a buscar_campos_inteligente (que usa ExactMatchFilter)
-                    respuesta_herramienta = buscar_campos_inteligente(valor_extraido, carpeta_indices=ruta_indices, campos_ordenados=campos_probables)
-
-                    # Si no hay resultados con buscar_campos_inteligente, intentar búsqueda por nombre
-                    if "No se encontraron coincidencias" in respuesta_herramienta:
-                        print(f"[DEBUG] Intentando búsqueda por nombre como fallback final para consulta simple.")
-                        # Usar el prompt original para buscar_nombre puede ser más robusto
-                        respuesta_herramienta = buscar_nombre(prompt)
+            print(f"[LLM] Sin análisis claro, intentando fallback con buscar_campos_inteligente")
+            campos_disponibles = list(campos_detectados)
+            campos_probables = sugerir_campos(valor, campos_disponibles)
+            respuesta_herramienta = buscar_campos_inteligente(valor, carpeta_indices=ruta_indices, campos_ordenados=campos_probables)
 
         print(f"\n📄Resultado:\n{respuesta_herramienta}\n")
 
@@ -943,15 +955,14 @@ while True:
         print(f"❌ Ocurrió un error durante la ejecución del agente: {e}")
         import traceback
         traceback.print_exc()
-        
-        # Intentar usar el agente ReAct como fallback
+
         try:
             respuesta_agente = agent.query(prompt)
             print(f"\n📄Resultado (procesado por agente fallback):\n{respuesta_agente}\n")
         except Exception as e2:
             print(f"❌ También falló el agente fallback: {e2}")
 
-# LIMPIAR MEMORIA AL SALIR
+# --- LIMPIEZA ---
 del llm, embed_model, agent, all_tools, indices
 if device == "cuda":
     torch.cuda.empty_cache()
