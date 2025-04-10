@@ -13,6 +13,7 @@ from difflib import SequenceMatcher
 from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter
 from llama_index.core.retrievers import VectorIndexRetriever
 from llama_index.core import StorageContext, load_index_from_storage
+from typing import Dict, Any, List
 import sys
 # Importar la función normalizar_texto desde normalizar_texto.py
 sys.path.append(r"C:\Users\Sistemas\Documents\OKIP\src")
@@ -424,6 +425,191 @@ def buscar_campos_similares(valor: str, campos: list[str], carpeta_indices: str)
     else:
         return f"No se encontraron coincidencias para el valor '{valor}'."
     
+def similitud(texto1, texto2):
+    return SequenceMatcher(None, texto1, texto2).ratio()
+
+# CAMPOS DISPONIBLES
+campos_detectados = set()
+
+for nombre_dir in os.listdir(ruta_indices):
+    ruta_indice = os.path.join(ruta_indices, nombre_dir)
+    if not os.path.isdir(ruta_indice) or not os.path.exists(os.path.join(ruta_indice, "docstore.json")):
+        continue
+
+    try:
+        storage_context = StorageContext.from_defaults(persist_dir=ruta_indice)
+        index = load_index_from_storage(storage_context)
+        for node_id, doc in index.docstore.docs.items():
+            metadata = doc.metadata
+            if metadata:
+                campos_detectados.update(metadata.keys())
+            break
+
+    except Exception as e:
+        print(f"Error al explorar metadatos en {nombre_dir}: {e}")
+        continue
+
+# ALIAS COMUNES
+alias_comunes = {
+    "telefono": ["telefono", "teléfono", "tel"],
+    "tarjeta": ["tarjeta"],
+    "direccion": ["direccion", "dirección", "calle"],
+    "cp": ["cp", "código postal", "codigo postal"],
+    "colonia": ["colonia"],
+    "estado": ["estado"],
+    "municipio": ["municipio"],
+    "nombre_completo": ["nombre", "nombre completo"],
+}
+
+# CONSTRUIR `mapa_campos` Y `campos_clave` AUTOMÁTICAMENTE
+mapa_campos = {}
+campos_clave = {}
+
+for campo in campos_detectados:
+    coincidencia = None
+    for base, variantes in alias_comunes.items():
+        if campo in [normalizar_texto(alias) for alias in variantes] or base in campo.lower():
+            coincidencia = base
+            break
+    if coincidencia:
+        mapa_campos[campo] = coincidencia
+        campos_clave.setdefault(coincidencia, []).append(campo)
+    else:
+        mapa_campos[campo] = campo
+        campos_clave.setdefault(campo, []).append(campo)
+
+# --- 3) HERRAMIENTA 1: BUSCAR POR NOMBRE COMPLETO ---
+def buscar_nombre(query: str) -> str:
+    print(f"Ejecutando búsqueda de nombre: '{query}'")
+    resultados_exactos = []
+    resultados_top_1 = []
+    query_upper = query.strip().upper()
+    ya_guardados = set()
+
+    for fuente, index in indices.items():
+        retriever = VectorIndexRetriever(index=index, similarity_top_k=3)
+        nodes = retriever.retrieve(query)
+
+        for node in nodes:
+            metadata = node.node.metadata
+            nombre_metadata = (
+                metadata.get("nombre_completo", "")
+                or metadata.get("nombre completo", "")
+                or metadata.get("nombre", "")
+            ).strip().upper()
+
+            def normalizar(nombre):
+                return sorted(nombre.replace(",", "").replace("  ", " ").strip().upper().split())
+
+            if normalizar(nombre_metadata) == normalizar(query_upper) and fuente not in ya_guardados:
+                resumen = [f"{k}: {v}" for k, v in metadata.items() if k not in ['fuente', 'archivo', 'fila_excel'] and v]
+                resultados_exactos.append(
+                    f"Coincidencia exacta en {fuente}:\n" + "\n".join(resumen)
+                )
+                ya_guardados.add(fuente)
+
+        # GUARDAR LAS MEJORES COINCIDENCIAS
+        for node in nodes:
+            metadata = node.node.metadata
+            nombre_metadata = (
+                metadata.get("nombre_completo", "")
+                or metadata.get("nombre completo", "")
+                or metadata.get("nombre", "")
+            ).strip().upper()
+
+            sim = similitud(nombre_metadata, query_upper)
+
+            if sim >= 0.5 and fuente not in ya_guardados:
+                resumen = [f"{k}: {v}" for k, v in metadata.items() if k not in ['fuente', 'archivo', 'fila_excel'] and v]
+                resultados_top_1.append(
+                    f"🔹 Coincidencia cercana en {fuente}:\n" + "\n".join(resumen)
+                )
+                ya_guardados.add(fuente)
+
+
+    if resultados_exactos:
+        respuesta_final = "Se encontraron estas coincidencias exactas en los archivos:\n\n" + "\n\n".join(resultados_exactos)
+        return respuesta_final
+
+    elif resultados_top_1:
+        return "Se encontraron estas coincidencias:\n\n" + "\n\n".join(resultados_top_1)
+
+    else:
+        return "No se encontraron resultados relevantes en ninguna fuente."
+
+    
+busqueda_global_tool = FunctionTool.from_defaults(
+    fn=buscar_nombre,
+    name="buscar_nombre",
+    description=(
+        "Usa esta herramienta para encontrar información completa de una persona en todas las bases, "
+        "cuando el usuario da el nombre completo. Por ejemplo: 'Dame la información de Juan Pérez', "
+        "'¿Qué sabes de Adrian Lino Marmolejo?'."
+    )
+)
+all_tools.insert(0, busqueda_global_tool)
+
+# --- 4) HERRAMIENTA 2: BUSCAR PERSONAS POR ATRIBUTO ---
+def buscar_atributo(campo: str, valor: str, carpeta_indices: str) -> str:
+    """
+    Busca coincidencias exactas por campo y valor en todos los índices dentro de la carpeta dada.
+    Aplica normalización para coincidir con los metadatos indexados.
+    """
+    print(f"\nBuscando registros donde '{campo}' = '{valor}'\n")
+
+    campo_normalizado = normalizar_texto(campo)
+    campo_final = mapa_campos.get(campo_normalizado, campo_normalizado)
+
+    campo_normalizado = normalizar_texto(campo)
+    campo_final = mapa_campos.get(campo_normalizado, campo_normalizado)
+    valor_final = normalizar_texto(valor)
+
+    resultados = []
+
+    for nombre_dir in os.listdir(carpeta_indices):
+        ruta_indice = os.path.join(carpeta_indices, nombre_dir)
+        if not os.path.isdir(ruta_indice) or not os.path.exists(os.path.join(ruta_indice, "docstore.json")):
+            continue
+
+        fuente = nombre_dir.replace("index_", "")
+        try:
+            storage_context = StorageContext.from_defaults(persist_dir=ruta_indice)
+            index = load_index_from_storage(storage_context)
+
+            filters = MetadataFilters(filters=[
+                ExactMatchFilter(key=campo_final, value=valor_final)
+            ])
+
+            retriever = VectorIndexRetriever(index=index, similarity_top_k=5, filters=filters)
+            nodes = retriever.retrieve(f"{campo_final} es {valor_final}")
+
+            if nodes:
+                for node in nodes:
+                    metadata = node.node.metadata
+                    resumen = [f"{k}: {v}" for k, v in metadata.items() if k not in ['fuente', 'archivo', 'fila_excel'] and v]
+                    resultados.append(f"Coincidencia en {fuente}:\n" + "\n".join(resumen))
+        except Exception as e:
+            print(f"Error al buscar en {fuente}: {e}")
+            continue
+
+    if resultados:
+        return "\n".join(resultados)
+    else:
+        return f"No se encontraron coincidencias para '{campo}: {valor}'"
+
+buscar_por_atributo_tool = FunctionTool.from_defaults(
+    fn=lambda campo, valor: buscar_atributo(campo, valor, carpeta_indices=ruta_indices),
+    name="buscar_atributo",
+    description=(
+        "Usa esta herramienta cuando el usuario pregunta por un campo específico como teléfono, dirección, estado, tarjeta, etc. "
+        "Por ejemplo: '¿Quién tiene el número 5544332211?', '¿Quién vive en Malva 101?', '¿Quién tiene la tarjeta terminación 8841?', "
+        "'¿Qué personas viven en Querétaro?', '¿Quién vive en calle Reforma 123?'."
+    )
+)
+all_tools.insert(1, buscar_por_atributo_tool)
+
+# --- 5) HERRAMIENTA 3: BUSCAR POR DIRECCION COMPLETA ---
+
 def buscar_direccion_combinada(texto_direccion: str) -> str:
     """
     Busca coincidencias de dirección combinando búsqueda exacta por metadatos
@@ -672,191 +858,6 @@ def buscar_direccion_combinada(texto_direccion: str) -> str:
 
     return mensaje_intro + "\n\n".join(textos_resultados) # Separador más claro
 
-# --- FIN DE LA FUNCIÓN COMBINADA ---
-
-def similitud(texto1, texto2):
-    return SequenceMatcher(None, texto1, texto2).ratio()
-
-# CAMPOS DISPONIBLES
-campos_detectados = set()
-
-for nombre_dir in os.listdir(ruta_indices):
-    ruta_indice = os.path.join(ruta_indices, nombre_dir)
-    if not os.path.isdir(ruta_indice) or not os.path.exists(os.path.join(ruta_indice, "docstore.json")):
-        continue
-
-    try:
-        storage_context = StorageContext.from_defaults(persist_dir=ruta_indice)
-        index = load_index_from_storage(storage_context)
-        for node_id, doc in index.docstore.docs.items():
-            metadata = doc.metadata
-            if metadata:
-                campos_detectados.update(metadata.keys())
-            break
-
-    except Exception as e:
-        print(f"Error al explorar metadatos en {nombre_dir}: {e}")
-        continue
-
-# ALIAS COMUNES
-alias_comunes = {
-    "telefono": ["telefono", "teléfono", "tel"],
-    "tarjeta": ["tarjeta"],
-    "direccion": ["direccion", "dirección", "calle"],
-    "cp": ["cp", "código postal", "codigo postal"],
-    "colonia": ["colonia"],
-    "estado": ["estado"],
-    "municipio": ["municipio"],
-    "nombre_completo": ["nombre", "nombre completo"],
-}
-
-# CONSTRUIR `mapa_campos` Y `campos_clave` AUTOMÁTICAMENTE
-mapa_campos = {}
-campos_clave = {}
-
-for campo in campos_detectados:
-    coincidencia = None
-    for base, variantes in alias_comunes.items():
-        if campo in [normalizar_texto(alias) for alias in variantes] or base in campo.lower():
-            coincidencia = base
-            break
-    if coincidencia:
-        mapa_campos[campo] = coincidencia
-        campos_clave.setdefault(coincidencia, []).append(campo)
-    else:
-        mapa_campos[campo] = campo
-        campos_clave.setdefault(campo, []).append(campo)
-
-# --- 3) HERRAMIENTA 1: BUSCAR POR NOMBRE COMPLETO ---
-def buscar_nombre(query: str) -> str:
-    print(f"Ejecutando búsqueda de nombre: '{query}'")
-    resultados_exactos = []
-    resultados_top_1 = []
-    query_upper = query.strip().upper()
-    ya_guardados = set()
-
-    for fuente, index in indices.items():
-        retriever = VectorIndexRetriever(index=index, similarity_top_k=3)
-        nodes = retriever.retrieve(query)
-
-        for node in nodes:
-            metadata = node.node.metadata
-            nombre_metadata = (
-                metadata.get("nombre_completo", "")
-                or metadata.get("nombre completo", "")
-                or metadata.get("nombre", "")
-            ).strip().upper()
-
-            def normalizar(nombre):
-                return sorted(nombre.replace(",", "").replace("  ", " ").strip().upper().split())
-
-            if normalizar(nombre_metadata) == normalizar(query_upper) and fuente not in ya_guardados:
-                resumen = [f"{k}: {v}" for k, v in metadata.items() if k not in ['fuente', 'archivo', 'fila_excel'] and v]
-                resultados_exactos.append(
-                    f"Coincidencia exacta en {fuente}:\n" + "\n".join(resumen)
-                )
-                ya_guardados.add(fuente)
-
-        # GUARDAR LAS MEJORES COINCIDENCIAS
-        for node in nodes:
-            metadata = node.node.metadata
-            nombre_metadata = (
-                metadata.get("nombre_completo", "")
-                or metadata.get("nombre completo", "")
-                or metadata.get("nombre", "")
-            ).strip().upper()
-
-            sim = similitud(nombre_metadata, query_upper)
-
-            if sim >= 0.5 and fuente not in ya_guardados:
-                resumen = [f"{k}: {v}" for k, v in metadata.items() if k not in ['fuente', 'archivo', 'fila_excel'] and v]
-                resultados_top_1.append(
-                    f"🔹 Coincidencia cercana en {fuente}:\n" + "\n".join(resumen)
-                )
-                ya_guardados.add(fuente)
-
-
-    if resultados_exactos:
-        respuesta_final = "Se encontraron estas coincidencias exactas en los archivos:\n\n" + "\n\n".join(resultados_exactos)
-        return respuesta_final
-
-    elif resultados_top_1:
-        return "Se encontraron estas coincidencias:\n\n" + "\n\n".join(resultados_top_1)
-
-    else:
-        return "No se encontraron resultados relevantes en ninguna fuente."
-
-    
-busqueda_global_tool = FunctionTool.from_defaults(
-    fn=buscar_nombre,
-    name="buscar_nombre",
-    description=(
-        "Usa esta herramienta para encontrar información completa de una persona en todas las bases, "
-        "cuando el usuario da el nombre completo. Por ejemplo: 'Dame la información de Juan Pérez', "
-        "'¿Qué sabes de Adrian Lino Marmolejo?'."
-    )
-)
-all_tools.insert(0, busqueda_global_tool)
-
-# --- 4) HERRAMIENTA 2: BUSCAR PERSONAS POR ATRIBUTO ---
-def buscar_atributo(campo: str, valor: str, carpeta_indices: str) -> str:
-    """
-    Busca coincidencias exactas por campo y valor en todos los índices dentro de la carpeta dada.
-    Aplica normalización para coincidir con los metadatos indexados.
-    """
-    print(f"\nBuscando registros donde '{campo}' = '{valor}'\n")
-
-    campo_normalizado = normalizar_texto(campo)
-    campo_final = mapa_campos.get(campo_normalizado, campo_normalizado)
-
-    campo_normalizado = normalizar_texto(campo)
-    campo_final = mapa_campos.get(campo_normalizado, campo_normalizado)
-    valor_final = normalizar_texto(valor)
-
-    resultados = []
-
-    for nombre_dir in os.listdir(carpeta_indices):
-        ruta_indice = os.path.join(carpeta_indices, nombre_dir)
-        if not os.path.isdir(ruta_indice) or not os.path.exists(os.path.join(ruta_indice, "docstore.json")):
-            continue
-
-        fuente = nombre_dir.replace("index_", "")
-        try:
-            storage_context = StorageContext.from_defaults(persist_dir=ruta_indice)
-            index = load_index_from_storage(storage_context)
-
-            filters = MetadataFilters(filters=[
-                ExactMatchFilter(key=campo_final, value=valor_final)
-            ])
-
-            retriever = VectorIndexRetriever(index=index, similarity_top_k=5, filters=filters)
-            nodes = retriever.retrieve(f"{campo_final} es {valor_final}")
-
-            if nodes:
-                for node in nodes:
-                    metadata = node.node.metadata
-                    resumen = [f"{k}: {v}" for k, v in metadata.items() if k not in ['fuente', 'archivo', 'fila_excel'] and v]
-                    resultados.append(f"Coincidencia en {fuente}:\n" + "\n".join(resumen))
-        except Exception as e:
-            print(f"Error al buscar en {fuente}: {e}")
-            continue
-
-    if resultados:
-        return "\n".join(resultados)
-    else:
-        return f"No se encontraron coincidencias para '{campo}: {valor}'"
-
-buscar_por_atributo_tool = FunctionTool.from_defaults(
-    fn=lambda campo, valor: buscar_atributo(campo, valor, carpeta_indices=ruta_indices),
-    name="buscar_atributo",
-    description=(
-        "Usa esta herramienta cuando el usuario pregunta por un campo específico como teléfono, dirección, estado, tarjeta, etc. "
-        "Por ejemplo: '¿Quién tiene el número 5544332211?', '¿Quién vive en Malva 101?', '¿Quién tiene la tarjeta terminación 8841?', "
-        "'¿Qué personas viven en Querétaro?', '¿Quién vive en calle Reforma 123?'."
-    )
-)
-all_tools.insert(1, buscar_por_atributo_tool)
-
 # Crear herramienta para búsqueda de dirección combinada
 buscar_direccion_tool = FunctionTool.from_defaults(
     fn=buscar_direccion_combinada, # Asegúrate que apunta a la nueva función
@@ -873,7 +874,7 @@ buscar_direccion_tool = FunctionTool.from_defaults(
 # Insertar la herramienta al inicio de la lista para darle prioridad
 all_tools.insert(0, buscar_direccion_tool)
 
-# --- 5) CREAR Y EJECUTAR EL AGENTE ---
+# --- 6) CREAR Y EJECUTAR EL AGENTE ---
 
 # CREAR EL AGENTE REACT
 try:
