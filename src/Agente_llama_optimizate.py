@@ -596,6 +596,20 @@ def buscar_atributo(campo: str, valor: str, carpeta_indices: str) -> str:
 
     resultados = []
 
+    if campo_final == "telefono":
+        posibles_valores = [valor_final]
+
+        # Si el valor es solo número local, buscar también sin lada
+        if len(valor_final) == 7:
+            posibles_valores.append(valor_final)
+        # Si el valor es número largo (ej. lada + número), agregar posibles versiones sin lada
+        elif len(valor_final) >= 10:
+            posibles_valores.append(valor_final[-7:])  # Últimos 7 dígitos
+
+    else:
+        posibles_valores = [valor_final]
+
+
     for nombre_dir in os.listdir(carpeta_indices):
         ruta_indice = os.path.join(carpeta_indices, nombre_dir)
         if not os.path.isdir(ruta_indice) or not os.path.exists(os.path.join(ruta_indice, "docstore.json")):
@@ -606,8 +620,9 @@ def buscar_atributo(campo: str, valor: str, carpeta_indices: str) -> str:
             storage_context = StorageContext.from_defaults(persist_dir=ruta_indice)
             index = load_index_from_storage(storage_context)
 
-            filters = MetadataFilters(filters=[
-                ExactMatchFilter(key=campo_final, value=valor_final)
+            for v in posibles_valores:
+                filters = MetadataFilters(filters=[
+                    ExactMatchFilter(key=campo_final, value=v)
             ])
 
             retriever = VectorIndexRetriever(index=index, similarity_top_k=5, filters=filters)
