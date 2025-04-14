@@ -28,7 +28,7 @@ ruta_indices = r"C:\Users\Sistemas\Documents\OKIP\llama_index_indices"
 ruta_modelo_llama3 = r"C:\Users\Sistemas\Documents\OKIP\models\models--meta-llama--Meta-Llama-3-8B-Instruct"
 
 # --- Constantes para buscar_direccion_combinada ---
-CAMPOS_DIRECCION = ['domicilio', 'domicilio calle', 'calle', 'numero', 'campo14', 'colonia', 'sector', 'municipio', 'ciudad', 'estado', 'cp', 'direccion', 'domicilio calle', 'codigo postal', 'edo de origen']
+CAMPOS_DIRECCION = ['domicilio', 'calle', 'numero', 'colonia', 'sector', 'municipio', 'ciudad', 'estado', 'cp', 'direccion', 'campo14', 'domicilio calle', 'codigo postal', 'edo de origen']
 CAMPOS_BUSQUEDA_EXACTA = ['domicilio', 'direccion', 'calle']
 STOP_WORDS = {'de', 'la', 'del', 'los', 'las', 'y', 'a', 'en', 'el', 'col', 'colonia', 'cp', 'sector', 'calzada', 'calz', 'boulevard', 'blvd', 'avenida', 'ave', 'av'}
 UMBRAL_PUNTAJE_MINIMO = 0.55
@@ -486,12 +486,9 @@ def interpretar_pregunta_llm(prompt: str) -> dict:
     system_prompt = (
         "Eres un asistente que analiza preguntas del usuario. Tu tarea es extraer:\n"
         "- 'tipo_busqueda': puede ser 'nombre', 'direccion' o 'atributo'.\n"
-        "- 'campo': si aplica, como 'telefono', 'municipio', 'sexo', 'clave ife', estado, codigo postal, ocupación, etc.\n"
+        "- 'campo': si aplica, como 'telefono', 'municipio', etc.\n"
         "- 'valor': el dato específico mencionado en la pregunta.\n\n"
-        "Normaliza:\n"
-        "- Si el usuario menciona 'INE' o 'IFE', usa el campo 'clave ife'.\n"
-        "- Si el usuario menciona 'Codigo postal', usa el campo 'CP'.\n"
-        "- Si el campo es 'sexo', tradúcelo a 'M' o 'F' según corresponda.\n"
+        "Normaliza el campo 'sexo' como 'M' o 'F' si el usuario escribe palabras como 'masculino', 'femenino', 'hombre', 'mujer'.\n"
         f"Pregunta: {prompt}\n"
         "Responde solo con un JSON válido. No agregues explicaciones ni comentarios."
     )
@@ -600,20 +597,6 @@ def buscar_atributo(campo: str, valor: str, carpeta_indices: str) -> str:
 
     resultados = []
 
-    if campo_final == "telefono":
-        posibles_valores = [valor_final]
-
-        # Si el valor es solo número local, buscar también sin lada
-        if len(valor_final) == 7:
-            posibles_valores.append(valor_final)
-        # Si el valor es número largo (ej. lada + número), agregar posibles versiones sin lada
-        elif len(valor_final) >= 10:
-            posibles_valores.append(valor_final[-7:])  # Últimos 7 dígitos
-
-    else:
-        posibles_valores = [valor_final]
-
-
     for nombre_dir in os.listdir(carpeta_indices):
         ruta_indice = os.path.join(carpeta_indices, nombre_dir)
         if not os.path.isdir(ruta_indice) or not os.path.exists(os.path.join(ruta_indice, "docstore.json")):
@@ -624,9 +607,8 @@ def buscar_atributo(campo: str, valor: str, carpeta_indices: str) -> str:
             storage_context = StorageContext.from_defaults(persist_dir=ruta_indice)
             index = load_index_from_storage(storage_context)
 
-            for v in posibles_valores:
-                filters = MetadataFilters(filters=[
-                    ExactMatchFilter(key=campo_final, value=v)
+            filters = MetadataFilters(filters=[
+                ExactMatchFilter(key=campo_final, value=valor_final)
             ])
 
             retriever = VectorIndexRetriever(index=index, similarity_top_k=5, filters=filters)

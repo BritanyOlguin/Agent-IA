@@ -16,6 +16,20 @@ import sys
 sys.path.append(r"C:\Users\Sistemas\Documents\OKIP\src")
 from normalizar_texto import normalizar_texto
 
+catalogo_inegi_estados = {
+    "01": "Aguascalientes", "02": "Baja California", "03": "Baja California Sur", "04": "Campeche",
+    "05": "Coahuila", "06": "Colima", "07": "Chiapas", "08": "Chihuahua", "09": "Ciudad de México",
+    "10": "Durango", "11": "Guanajuato", "12": "Guerrero", "13": "Hidalgo", "14": "Jalisco",
+    "15": "Estado de México", "16": "Michoacán", "17": "Morelos", "18": "Nayarit", "19": "Nuevo León",
+    "20": "Oaxaca", "21": "Puebla", "22": "Querétaro", "23": "Quintana Roo", "24": "San Luis Potosí",
+    "25": "Sinaloa", "26": "Sonora", "27": "Tabasco", "28": "Tamaulipas", "29": "Tlaxcala",
+    "30": "Veracruz", "31": "Yucatán", "32": "Zacatecas"
+}
+
+def traducir_codigo_inegi_a_estado(codigo: str) -> str:
+    codigo = codigo.zfill(2)  # Asegura formato "01", "09", etc.
+    return catalogo_inegi_estados.get(codigo, codigo)
+
 def crear_nombre_completo(row):
     """
     Crea un nombre completo a partir de columnas si existen nombre, apellido paterno y materno.
@@ -227,6 +241,18 @@ for archivo_nombre in os.listdir(carpeta_bd):
                 if not pd.isna(v) and str(v).lower() not in ["nan", "3586127"]
             }
 
+            # Reemplazar claves INEGI por nombre de estado en campos específicos
+            campos_estado_numerico = ["estado de origen", "edo registro"]
+
+            for campo in list(datos_fila_limpios.keys()):
+                campo_normalizado = normalizar_texto(campo)
+                if any(normalizar_texto(c) in campo_normalizado for c in campos_estado_numerico):
+                    valor = datos_fila_limpios[campo]
+                    if valor.isdigit():
+                        estado_nombre = traducir_codigo_inegi_a_estado(valor)
+                        datos_fila_limpios[campo] = normalizar_texto(estado_nombre)  # Reemplazar valor
+
+
             # 3. Si se generó nombre completo, eliminar nombre, paterno, materno
             if nombre_completo:
                 for key in list(datos_fila_limpios.keys()):
@@ -242,7 +268,7 @@ for archivo_nombre in os.listdir(carpeta_bd):
             # Generar campo direccion_completa
             componentes_direccion = []
             componentes_encontrados = {}
-            campos_direccion = ['calle', 'domicilio', 'numero', 'campo 14', 'colonia', 'cp', 'codigo postal', 'municipio', 'ciudad', 'sector', 'estado', 'edo de origen', 'entidad']
+            campos_direccion = ['calle', 'domicilio', 'numero', 'campo14', 'colonia', 'cp', 'codigo postal', 'municipio', 'ciudad', 'sector', 'estado', 'entidad']
 
             for campo in campos_direccion:
                 for col in datos_fila_limpios.keys():
