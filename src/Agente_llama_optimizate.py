@@ -485,17 +485,18 @@ llm_clasificador = pipeline("text-generation", model=model, tokenizer=tokenizer)
 def interpretar_pregunta_llm(prompt: str) -> dict:
     system_prompt = (
         "Eres un asistente que analiza preguntas del usuario. Tu tarea es extraer:\n"
-        "- 'tipo_busqueda': puede ser 'nombre', 'direccion' o 'atributo'.\n"
+        "- 'tipo_busqueda': puede ser 'nombre', 'direccion', 'telefono' o 'atributo'.\n"
         "- 'campo': si aplica, como 'telefono', 'municipio', etc.\n"
         "- 'valor': el dato específico mencionado en la pregunta.\n\n"
-        "Normaliza el campo 'sexo' como 'M' o 'F' si el usuario escribe palabras como 'masculino', 'femenino', 'hombre', 'mujer'.\n"
+        "REGLAS:\n"
+        "- Si el campo es 'telefono_completo', entonces 'tipo_busqueda' debe ser 'telefono'.\n"
+        "- Normaliza el campo 'sexo' como 'M' o 'F' si el usuario escribe palabras como 'masculino', 'femenino', 'hombre', 'mujer'.\n\n"
         f"Pregunta: {prompt}\n"
         "Responde solo con un JSON válido. No agregues explicaciones ni comentarios."
     )
     
     salida_cruda = llm_clasificador(system_prompt, max_new_tokens=256, return_full_text=False)[0]['generated_text']
     
-    # Buscar JSON limpio
     try:
         match = re.search(r'\{[\s\S]*?\}', salida_cruda)
         if match:
@@ -506,7 +507,6 @@ def interpretar_pregunta_llm(prompt: str) -> dict:
     except Exception as e:
         print(f"[⚠️ LLM] Error al decodificar JSON: {e}")
 
-    # Fallback: interpreta que es desconocido
     return {"tipo_busqueda": "desconocido", "valor": prompt}
 
 # --- 3) HERRAMIENTA 1: BUSCAR POR NOMBRE COMPLETO ---
@@ -903,9 +903,74 @@ buscar_direccion_tool = FunctionTool.from_defaults(
 )
 
 # Insertar la herramienta al inicio de la lista para darle prioridad
-all_tools.insert(0, buscar_direccion_tool)
+all_tools.insert(3, buscar_direccion_tool)
 
-# --- 6) CREAR Y EJECUTAR EL AGENTE ---
+# --- 6) HERRAMIENTA 4: BUSCAR POR NUMERO TELEFONICO ---
+def buscar_numero_telefono(valor: str) -> str:
+    """
+    Búsqueda tolerante para teléfonos, lada o combinaciones incompletas.
+    Evita duplicados entre campos como 'telefono', 'lada' y 'telefono_completo'.
+    """
+    campos_telefono = ["telefono_completo", "telefono", "lada"]
+    valor_norm = normalizar_texto(valor)
+    resultados = {}
+    
+    for fuente, index in indices.items():
+        for campo in campos_telefono:
+            try:
+                for node_id, doc in index.docstore.docs.items():
+                    metadata = doc.metadata
+                    if not metadata or campo not in metadata:
+                        continue
+
+                    valor_campo = str(metadata.get(campo, "")).strip()
+                    if not valor_campo:
+                        continue
+
+                    valor_campo_norm = normalizar_texto(valor_campo)
+
+                    if valor_norm in valor_campo_norm or valor_campo_norm.endswith(valor_norm) or valor_campo_norm.startswith(valor_norm):
+                        score = 1.0 if valor_norm == valor_campo_norm else \
+                                0.9 if valor_campo_norm.endswith(valor_norm) else \
+                                0.8 if valor_campo_norm.startswith(valor_norm) else \
+                                0.5
+                        
+                        id_registro = str(metadata.get("id", "")) + str(metadata.get("fila_origen", "")) + str(metadata.get("nombre_completo", "")).strip().lower()
+                        if not id_registro:
+                            id_registro = doc.node.node_id
+                        
+                        # Solo guardamos el mejor resultado por registro
+                        if id_registro not in resultados or resultados[id_registro]['score'] < score:
+                            resumen = [f"{k}: {v}" for k, v in metadata.items() if k not in ['fuente', 'archivo', 'fila_excel'] and v]
+                            resultados[id_registro] = {
+                                'score': score,
+                                'fuente': fuente,
+                                'campo': campo,
+                                'texto': f"Coincidencia en {fuente} (campo '{campo}'):\n" + "\n".join(resumen)
+                            }
+            except Exception as e:
+                print(f"[WARN] Error revisando {fuente} campo {campo}: {e}")
+                continue
+
+    if not resultados:
+        return f"No se encontraron coincidencias relevantes para el número '{valor}'."
+
+    resultados_ordenados = sorted(resultados.values(), key=lambda x: -x['score'])
+    return "Se encontraron las siguientes coincidencias para número telefónico:\n\n" + "\n\n".join([r['texto'] for r in resultados_ordenados[:10]])
+
+buscar_telefono_tool = FunctionTool.from_defaults(
+    fn=buscar_numero_telefono,
+    name="buscar_numero_telefono",
+    description=(
+        "Usa esta herramienta cuando el campo detectado sea 'telefono_completo' y el usuario consulta por un número telefónico completo. "
+        "Ejemplo: '¿Quién tiene el número 5544332211?', pero NO para lada o partes de teléfonos."
+    )
+)
+
+all_tools.insert(4, buscar_telefono_tool)
+
+
+# --- 7) CREAR Y EJECUTAR EL AGENTE ---
 
 # CREAR EL AGENTE REACT
 try:
@@ -936,6 +1001,10 @@ while True:
 
         if tipo == "direccion":
             respuesta_herramienta = buscar_direccion_combinada(valor)
+
+        elif tipo == "telefono" and campo == "telefono_completo" and valor:
+            print(f"[LLM] Búsqueda telefónica solo si el campo es telefono_completo")
+            respuesta_herramienta = buscar_numero_telefono(valor)
 
         elif tipo == "atributo" and campo and valor:
             print(f"[LLM] Campo detectado: {campo} = {valor}")
