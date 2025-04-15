@@ -486,7 +486,7 @@ def interpretar_pregunta_llm(prompt: str) -> dict:
     system_prompt = (
         "Eres un asistente que analiza preguntas del usuario. Tu tarea es extraer:\n"
         "- 'tipo_busqueda': puede ser 'nombre', 'direccion', 'telefono' o 'atributo'.\n"
-        "- 'campo': si aplica, como 'telefono', 'municipio', etc.\n"
+        "- 'campo': si aplica, como 'telefono', 'municipio', 'sexo', 'clave ife' etc.\n"
         "- 'valor': el dato específico mencionado en la pregunta.\n\n"
         "REGLAS:\n"
         "- Si el campo es 'telefono_completo', entonces 'tipo_busqueda' debe ser 'telefono'.\n"
