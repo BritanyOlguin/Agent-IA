@@ -241,6 +241,28 @@ for archivo_nombre in os.listdir(carpeta_bd):
                 if not pd.isna(v) and str(v).lower() not in ["nan", "3586127"]
             }
 
+            # 4.1 Generar campo telefono_completo si existen lada y telefono
+            telefono_completo = None
+            col_lada = None
+            col_telefono = None
+
+            # Buscar columnas candidatas (normalizadas) para lada y telefono
+            for col in datos_fila_limpios:
+                if 'lada' in col:
+                    col_lada = col
+                if 'telefono' in col:
+                    col_telefono = col
+
+            if col_telefono:
+                telefono = datos_fila_limpios.get(col_telefono, "")
+                lada = datos_fila_limpios.get(col_lada, "") if col_lada else ""
+                
+                # Si existe lada, concatenarla
+                telefono_completo = f"{lada}{telefono}" if lada else telefono
+                datos_fila_limpios["telefono_completo"] = telefono_completo
+                texto_a_incrustar += f"\ntelefono_completo: {telefono_completo}"
+
+
             # Reemplazar claves INEGI por nombre de estado en campos específicos
             campos_estado_numerico = ["estado de origen", "edo registro"]
 
