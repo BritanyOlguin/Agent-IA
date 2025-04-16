@@ -522,12 +522,15 @@ def interpretar_pregunta_llm(prompt: str) -> dict:
     system_prompt = (
         "Eres un asistente que analiza preguntas del usuario. Tu tarea es extraer:\n"
         "- 'tipo_busqueda': puede ser 'nombre', 'direccion', 'telefono' o 'atributo'.\n"
-        "- 'campo': si aplica, como 'telefono', 'municipio', 'sexo', 'clave ife' etc.\n"
+        "- 'campo': si aplica, como 'telefono', 'municipio', 'sexo', 'ocupacion', 'clave ife' etc.\n"
         "- 'valor': el dato específico mencionado en la pregunta.\n\n"
         "REGLAS:\n"
+        "- Si solo se proporciona un valor alfanumérico sin especificar campo, usa campo='' (vacío).\n"
+        "- Si la pregunta es sobre 'hombres' o 'mujeres', usa tipo_busqueda='atributo', campo='sexo', valor='M' o 'F'.\n"
+        "- Si la pregunta es sobre ocupación/profesión, usa tipo_busqueda='atributo', campo='ocupacion', valor='profesión mencionada'.\n"
+        "- Si la pregunta es sobre tarjeta, usa tipo_busqueda='atributo', campo='tarjeta', valor='numeros mencionados'.\n"
         "- Si la pregunta contiene nombres propios como 'Juan', 'María', 'González', asigna tipo_busqueda='nombre'.\n"
         "- Si el campo es 'telefono_completo', entonces 'tipo_busqueda' debe ser 'telefono'.\n"
-        "- Normaliza el campo 'sexo' como 'M' o 'F' si el usuario escribe palabras como 'masculino', 'femenino', 'hombre', 'mujer'.\n\n"
         f"Pregunta: {prompt}\n"
         "Responde solo con un JSON válido. No agregues explicaciones ni comentarios."
     )
@@ -848,58 +851,206 @@ all_tools.insert(0, busqueda_global_tool)
 # --- 4) HERRAMIENTA 2: BUSCAR PERSONAS POR ATRIBUTO ---
 def buscar_atributo(campo: str, valor: str, carpeta_indices: str) -> str:
     """
-    Busca coincidencias exactas por campo y valor en todos los índices dentro de la carpeta dada.
-    Aplica normalización para coincidir con los metadatos indexados.
+    Busca coincidencias por campo y valor en todos los índices.
+    Versión mejorada con capacidad de búsqueda flexible y manejo de categorías.
+    
+    Características:
+    - Búsqueda exacta con filtros de metadatos cuando campo es específico
+    - Búsqueda en todos los campos cuando no se especifica campo o cuando no hay resultados
+    - Manejo especial para categorías como sexo y ocupación
+    - Normalización de valores para mejorar coincidencias
     """
     print(f"\nBuscando registros donde '{campo}' = '{valor}'\n")
-
-    campo_normalizado = normalizar_texto(campo)
-    campo_final = mapa_campos.get(campo_normalizado, campo_normalizado)
-
-    campo_normalizado = normalizar_texto(campo)
-    campo_final = mapa_campos.get(campo_normalizado, campo_normalizado)
-    valor_final = normalizar_texto(valor)
-
+    
+    # Normalizar campo y valor
+    campo_normalizado = normalizar_texto(campo) if campo else ""
+    valor_normalizado = normalizar_texto(valor)
+    
+    # Casos especiales de normalización
+    if campo_normalizado in ["sexo", "genero"]:
+        if valor_normalizado in ["hombre", "hombres", "masculino", "varon", "varones", "m"]:
+            valor_normalizado = "m"
+        elif valor_normalizado in ["mujer", "mujeres", "femenino", "f"]:
+            valor_normalizado = "f"
+    
+    # Preparar para resultados
     resultados = []
+    registros_encontrados = set()  # Para evitar duplicados
+    
+    # Determinar si estamos buscando categorías específicas
+    busqueda_categorica = campo_normalizado in ["sexo", "genero", "ocupacion", "profesion"]
+    
+    # Obtener campo final mapeado (para normalización de nombres de campo)
+    campo_final = mapa_campos.get(campo_normalizado, campo_normalizado) if campo_normalizado else ""
+    
+    # Fase 1: Búsqueda exacta por filtros si tenemos un campo específico
+    if campo_final and not busqueda_categorica:
+        for nombre_dir in os.listdir(carpeta_indices):
+            ruta_indice = os.path.join(carpeta_indices, nombre_dir)
+            if not os.path.isdir(ruta_indice) or not os.path.exists(os.path.join(ruta_indice, "docstore.json")):
+                continue
 
-    for nombre_dir in os.listdir(carpeta_indices):
-        ruta_indice = os.path.join(carpeta_indices, nombre_dir)
-        if not os.path.isdir(ruta_indice) or not os.path.exists(os.path.join(ruta_indice, "docstore.json")):
-            continue
+            fuente = nombre_dir.replace("index_", "")
+            try:
+                storage_context = StorageContext.from_defaults(persist_dir=ruta_indice)
+                index = load_index_from_storage(storage_context)
 
-        fuente = nombre_dir.replace("index_", "")
-        try:
-            storage_context = StorageContext.from_defaults(persist_dir=ruta_indice)
-            index = load_index_from_storage(storage_context)
+                # Intentar búsqueda exacta con filtro primero
+                try:
+                    filters = MetadataFilters(filters=[
+                        ExactMatchFilter(key=campo_final, value=valor_normalizado)
+                    ])
+                    retriever = VectorIndexRetriever(index=index, similarity_top_k=5, filters=filters)
+                    nodes = retriever.retrieve(f"{campo_final} es {valor}")
 
-            filters = MetadataFilters(filters=[
-                ExactMatchFilter(key=campo_final, value=valor_final)
-            ])
+                    if nodes:
+                        for node in nodes:
+                            metadata = node.node.metadata
+                            id_registro = str(metadata.get("id", "")) + str(metadata.get("fila_origen", ""))
+                            if not id_registro:
+                                id_registro = node.node.node_id
+                                
+                            if id_registro in registros_encontrados:
+                                continue
+                                
+                            resumen = [f"{k}: {v}" for k, v in metadata.items() 
+                                      if k not in ['fuente', 'archivo', 'fila_excel'] and v]
+                            resultados.append(f"Coincidencia exacta en {fuente}:\n" + "\n".join(resumen))
+                            registros_encontrados.add(id_registro)
+                except Exception as e_filter:
+                    print(f"Error en filtro exacto para {fuente}: {e_filter}")
+                    # Continuar si el filtro falla (campo no existente, etc.)
+                    pass
 
-            retriever = VectorIndexRetriever(index=index, similarity_top_k=5, filters=filters)
-            nodes = retriever.retrieve(f"{campo_final} es {valor_final}")
-
-            if nodes:
-                for node in nodes:
-                    metadata = node.node.metadata
-                    resumen = [f"{k}: {v}" for k, v in metadata.items() if k not in ['fuente', 'archivo', 'fila_excel'] and v]
-                    resultados.append(f"Coincidencia en {fuente}:\n" + "\n".join(resumen))
-        except Exception as e:
-            print(f"Error al buscar en {fuente}: {e}")
-            continue
-
+            except Exception as e:
+                print(f"Error al cargar índice {fuente}: {e}")
+                continue
+    
+    # Fase 2: Si es búsqueda categórica o no tenemos resultados exactos, buscar en todos los documentos
+    if busqueda_categorica or (not resultados and valor):
+        print(f"Realizando búsqueda exhaustiva para '{valor_normalizado}'...")
+        
+        # Definir campos de búsqueda
+        campos_a_buscar = []
+        if campo_final:
+            # Si tenemos un campo específico, buscar sus variantes
+            if campo_final in campos_clave:
+                campos_a_buscar = [normalizar_texto(c) for c in campos_clave[campo_final]]
+            else:
+                campos_a_buscar = [campo_final]
+        
+        # Recorrer todos los índices
+        for fuente, index in indices.items():
+            try:
+                # Para cada documento en el índice
+                for node_id, doc in index.docstore.docs.items():
+                    metadata = doc.metadata
+                    if not metadata:
+                        continue
+                    
+                    # Crear ID único para el registro
+                    id_registro = str(metadata.get("id", "")) + str(metadata.get("fila_origen", ""))
+                    if not id_registro:
+                        id_registro = node_id
+                    
+                    # Evitar duplicados
+                    if id_registro in registros_encontrados:
+                        continue
+                    
+                    encontrado = False
+                    coincidencia_campo = None
+                    
+                    # Si tenemos campos específicos a buscar
+                    if campos_a_buscar:
+                        for k, v in metadata.items():
+                            k_norm = normalizar_texto(k)
+                            
+                            # Verificar si este campo nos interesa
+                            if k_norm in campos_a_buscar:
+                                v_str = str(v).strip().lower()
+                                v_norm = normalizar_texto(v_str)
+                                
+                                # Verificar coincidencia exacta o parcial según el caso
+                                if v_norm == valor_normalizado or (
+                                    len(valor_normalizado) > 4 and (
+                                        valor_normalizado in v_norm or 
+                                        v_norm in valor_normalizado
+                                    )
+                                ):
+                                    encontrado = True
+                                    coincidencia_campo = k
+                                    break
+                    
+                    # Si no encontramos en campos específicos o no los tenemos, 
+                    # buscar en todos los campos si el valor es significativo
+                    if not encontrado and len(valor_normalizado) >= 4:
+                        for k, v in metadata.items():
+                            if k in ['fuente', 'archivo', 'fila_excel']:
+                                continue
+                                
+                            v_str = str(v).strip().lower()
+                            v_norm = normalizar_texto(v_str)
+                            
+                            # Búsqueda exacta o como substring si es valor largo
+                            if v_norm == valor_normalizado or (
+                                len(valor_normalizado) > 6 and 
+                                valor_normalizado in v_norm
+                            ):
+                                encontrado = True
+                                coincidencia_campo = k
+                                break
+                    
+                    # Si encontramos coincidencia, agregar a resultados
+                    if encontrado:
+                        tipo_coincidencia = "exacta" if coincidencia_campo else "en múltiples campos"
+                        campo_texto = f" en campo '{coincidencia_campo}'" if coincidencia_campo else ""
+                        
+                        resumen = [f"{k}: {v}" for k, v in metadata.items() 
+                                   if k not in ['fuente', 'archivo', 'fila_excel'] and v]
+                        resultados.append(f"Coincidencia {tipo_coincidencia}{campo_texto} en {fuente}:\n" + "\n".join(resumen))
+                        registros_encontrados.add(id_registro)
+                        
+                        # Limitar resultados para evitar sobrecarga (solo si no es búsqueda de campo específico)
+                        if not campo_final and len(resultados) >= 15:
+                            break
+            
+            except Exception as e:
+                print(f"Error al buscar en índice {fuente}: {e}")
+                continue
+    
+    # Formatear respuesta final
     if resultados:
-        return "\n".join(resultados)
+        total_registros = len(resultados)
+        num_mostrados = min(15, total_registros)  # Limitar a 15 resultados máximo
+        
+        # Mensaje introductorio según el tipo de búsqueda
+        if campo:
+            mensaje_intro = f"Se encontraron {total_registros} registros para {campo}='{valor}'."
+        else:
+            mensaje_intro = f"Se encontraron {total_registros} registros que contienen '{valor}'."
+        
+        # Agregar nota si estamos limitando resultados
+        if total_registros > num_mostrados:
+            mensaje_intro += f" Mostrando {num_mostrados} primeros resultados:"
+        
+        return mensaje_intro + "\n\n" + "\n\n".join(resultados[:num_mostrados])
     else:
-        return f"No se encontraron coincidencias para '{campo}: {valor}'"
+        if campo:
+            return f"No se encontraron coincidencias para '{campo}: {valor}'."
+        else:
+            return f"No se encontraron coincidencias para el valor '{valor}'."
 
+# Actualizar la descripción de la herramienta buscar_por_atributo_tool
 buscar_por_atributo_tool = FunctionTool.from_defaults(
     fn=lambda campo, valor: buscar_atributo(campo, valor, carpeta_indices=ruta_indices),
     name="buscar_atributo",
     description=(
-        "Usa esta herramienta cuando el usuario pregunta por un campo específico como teléfono, dirección, estado, tarjeta, etc. "
-        "Por ejemplo: '¿Quién tiene el número 5544332211?', '¿Quién vive en Malva 101?', '¿Quién tiene la tarjeta terminación 8841?', "
-        "'¿Qué personas viven en Querétaro?', '¿Quién vive en calle Reforma 123?'."
+        "Usa esta herramienta cuando el usuario busca por cualquier atributo específico o valor. "
+        "Funciona tanto si se especifica el campo ('¿Quién tiene la clave IFE ABCDE?') "
+        "como si solo se da un valor sin campo ('A quién pertenece ABCDE?'). "
+        "También maneja categorías como sexo ('hombres', 'mujeres') y ocupación ('ingeniero', 'médico'). "
+        "Por ejemplo: '¿Quién tiene el número 5544332211?', '¿A quién pertenece la CURP ABCD123?', "
+        "'¿Qué personas viven en Querétaro?', 'Muestra a todas las mujeres', 'Busca ingenieros'."
     )
 )
 all_tools.insert(1, buscar_por_atributo_tool)
