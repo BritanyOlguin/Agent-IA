@@ -131,6 +131,11 @@ def sugerir_campos(valor: str, campos_disponibles: list[str]) -> list[str]:
     Si es numérico largo, prioriza teléfono, tarjeta, etc.
     Si es texto, busca campos tipo dirección, municipio, etc.
     """
+    # Protección contra valores None
+    if valor is None:
+        print("[ADVERTENCIA] Valor None recibido en sugerir_campos. Usando texto vacío.")
+        valor = ""
+        
     valor = valor.strip()
     campos_probables = []
 
@@ -461,6 +466,8 @@ alias_comunes = {
     "estado": ["estado"],
     "municipio": ["municipio"],
     "nombre_completo": ["nombre", "nombre completo"],
+    "ocupacion": ["ocupacion", "profesion", "trabajo"],
+    "sexo": ["sexo", "genero", "género"],
 }
 
 # CONSTRUIR `mapa_campos` Y `campos_clave` AUTOMÁTICAMENTE
@@ -483,99 +490,357 @@ for campo in campos_detectados:
 llm_clasificador = pipeline("text-generation", model=model, tokenizer=tokenizer)
 
 def interpretar_pregunta_llm(prompt: str) -> dict:
+    """
+    Analiza la pregunta del usuario y extrae tipo de búsqueda, campo y valor.
+    Mejorado para detectar mejor las consultas de nombres propios.
+    """
+    # Verificación rápida de patrones comunes para nombres
+    prompt_lower = prompt.lower()
+    
+    # Patrones para detectar rápidamente consultas de nombre
+    patrones_nombre = [
+        r"(?:dame|muestra|busca|encuentra|quiero|necesito)?\s+(?:toda)?\s*(?:la)?\s+información\s+(?:de|sobre)\s+([A-Za-zÁÉÍÓÚáéíóúÑñ\s]+)",
+        r"(?:qué|que)\s+(?:sabes|información\s+tienes)\s+(?:de|sobre)\s+([A-Za-zÁÉÍÓÚáéíóúÑñ\s]+)",
+        r"busca(?:r|me)?\s+(?:a)?\s+([A-Za-zÁÉÍÓÚáéíóúÑñ\s]+)",
+        r"encuentra\s+(?:a)?\s+([A-Za-zÁÉÍÓÚáéíóúÑñ\s]+)"
+    ]
+    
+    # Verificar patrones de nombre primero (optimización)
+    for patron in patrones_nombre:
+        match = re.search(patron, prompt_lower)
+        if match:
+            nombre = match.group(1).strip()
+            if len(nombre) > 0 and not nombre.isdigit():
+                # Si parece un nombre, retornar directamente
+                return {
+                    "tipo_busqueda": "nombre",
+                    "campo": "nombre_completo",
+                    "valor": nombre
+                }
+
+    # Si no se detecta un patrón de nombre, continuar con LLM
     system_prompt = (
         "Eres un asistente que analiza preguntas del usuario. Tu tarea es extraer:\n"
         "- 'tipo_busqueda': puede ser 'nombre', 'direccion', 'telefono' o 'atributo'.\n"
         "- 'campo': si aplica, como 'telefono', 'municipio', 'sexo', 'clave ife' etc.\n"
         "- 'valor': el dato específico mencionado en la pregunta.\n\n"
         "REGLAS:\n"
+        "- Si la pregunta contiene nombres propios como 'Juan', 'María', 'González', asigna tipo_busqueda='nombre'.\n"
         "- Si el campo es 'telefono_completo', entonces 'tipo_busqueda' debe ser 'telefono'.\n"
         "- Normaliza el campo 'sexo' como 'M' o 'F' si el usuario escribe palabras como 'masculino', 'femenino', 'hombre', 'mujer'.\n\n"
         f"Pregunta: {prompt}\n"
         "Responde solo con un JSON válido. No agregues explicaciones ni comentarios."
     )
     
-    salida_cruda = llm_clasificador(system_prompt, max_new_tokens=256, return_full_text=False)[0]['generated_text']
-    
     try:
+        salida_cruda = llm_clasificador(system_prompt, max_new_tokens=256, return_full_text=False)[0]['generated_text']
         match = re.search(r'\{[\s\S]*?\}', salida_cruda)
         if match:
             json_text = match.group(0)
-            return json.loads(json_text)
+            resultado = json.loads(json_text)
+            
+            # Verificar si el valor es None o vacío
+            if resultado.get("valor") is None or resultado.get("valor") == "":
+                # Para búsquedas de nombre, extraer el valor usando heurísticas
+                if resultado.get("tipo_busqueda") == "nombre":
+                    # Intentar obtener el nombre de la consulta
+                    palabras = prompt.split()
+                    # Tomar las últimas 1-3 palabras como posible nombre
+                    posible_nombre = " ".join(palabras[-min(3, len(palabras)):])
+                    resultado["valor"] = posible_nombre
+                else:
+                    # Valor por defecto para evitar errores
+                    resultado["valor"] = prompt
+            
+            return resultado
         else:
             print("[⚠️ LLM] No se detectó JSON válido.")
     except Exception as e:
         print(f"[⚠️ LLM] Error al decodificar JSON: {e}")
 
+    # En caso de error, intentar detectar nombres propios como último recurso
+    palabras = prompt.split()
+    for palabra in palabras:
+        if palabra[0].isupper() and len(palabra) > 2 and palabra.isalpha():
+            return {"tipo_busqueda": "nombre", "campo": "nombre_completo", "valor": palabra}
+    
+    # Fallback final: devolver el prompt completo como valor
     return {"tipo_busqueda": "desconocido", "valor": prompt}
 
 # --- 3) HERRAMIENTA 1: BUSCAR POR NOMBRE COMPLETO ---
 def buscar_nombre(query: str) -> str:
+    """
+    Busca coincidencias de nombres completos o parciales y las retorna ordenadas por relevancia.
+    Permite búsquedas por cualquier combinación de nombre/apellidos, en cualquier orden.
+    """
     print(f"Ejecutando búsqueda de nombre: '{query}'")
-    resultados_exactos = []
-    resultados_top_1 = []
-    query_upper = query.strip().upper()
-    ya_guardados = set()
-
+    
+    # Normalizar la consulta
+    query = query.strip()
+    query_norm = normalizar_texto(query)
+    query_tokens = set(query_norm.split())
+    
+    # Estructura para almacenar resultados por categoría
+    resultados_por_categoria = {
+        "exactos": [],          # Coincidencia exacta o casi exacta 
+        "completos": [],        # Todos los tokens de búsqueda están presentes
+        "parciales_alta": [],   # Coincidencia significativa (múltiples tokens o apellido completo)
+        "parciales_media": [],  # Coincidencia parcial básica
+        "posibles": []          # Coincidencias de baja confianza pero potencialmente útiles
+    }
+    
+    # Registros ya encontrados para evitar duplicados
+    registros_encontrados = set()
+    
+    # Recorrer todos los índices
     for fuente, index in indices.items():
-        retriever = VectorIndexRetriever(index=index, similarity_top_k=3)
-        nodes = retriever.retrieve(query)
-
-        for node in nodes:
-            metadata = node.node.metadata
-            nombre_metadata = (
-                metadata.get("nombre_completo", "")
-                or metadata.get("nombre completo", "")
-                or metadata.get("nombre", "")
-            ).strip().upper()
-
-            def normalizar(nombre):
-                return sorted(nombre.replace(",", "").replace("  ", " ").strip().upper().split())
-
-            if normalizar(nombre_metadata) == normalizar(query_upper) and fuente not in ya_guardados:
-                resumen = [f"{k}: {v}" for k, v in metadata.items() if k not in ['fuente', 'archivo', 'fila_excel'] and v]
-                resultados_exactos.append(
-                    f"Coincidencia exacta en {fuente}:\n" + "\n".join(resumen)
-                )
-                ya_guardados.add(fuente)
-
-        # GUARDAR LAS MEJORES COINCIDENCIAS
-        for node in nodes:
-            metadata = node.node.metadata
-            nombre_metadata = (
-                metadata.get("nombre_completo", "")
-                or metadata.get("nombre completo", "")
-                or metadata.get("nombre", "")
-            ).strip().upper()
-
-            sim = similitud(nombre_metadata, query_upper)
-
-            if sim >= 0.5 and fuente not in ya_guardados:
-                resumen = [f"{k}: {v}" for k, v in metadata.items() if k not in ['fuente', 'archivo', 'fila_excel'] and v]
-                resultados_top_1.append(
-                    f"🔹 Coincidencia cercana en {fuente}:\n" + "\n".join(resumen)
-                )
-                ya_guardados.add(fuente)
-
-
-    if resultados_exactos:
-        respuesta_final = "Se encontraron estas coincidencias exactas en los archivos:\n\n" + "\n\n".join(resultados_exactos)
-        return respuesta_final
-
-    elif resultados_top_1:
-        return "Se encontraron estas coincidencias:\n\n" + "\n\n".join(resultados_top_1)
-
-    else:
-        return "No se encontraron resultados relevantes en ninguna fuente."
-
+        try:
+            # Usar búsqueda semántica para obtener candidatos iniciales
+            retriever = VectorIndexRetriever(index=index, similarity_top_k=8)  # Aumentar para más candidatos
+            nodes = retriever.retrieve(query)
+            
+            # Procesar cada nodo encontrado
+            for node in nodes:
+                metadata = node.node.metadata
+                
+                # Crear identificador único para este registro
+                id_registro = str(metadata.get("id", "")) + str(metadata.get("fila_origen", ""))
+                if not id_registro:
+                    id_registro = node.node.node_id
+                
+                # Si ya procesamos este registro, saltarlo
+                if id_registro in registros_encontrados:
+                    continue
+                
+                # Obtener nombre completo de metadatos (probar diferentes campos)
+                nombre_completo = (
+                    metadata.get("nombre_completo", "") or 
+                    metadata.get("nombre completo", "") or 
+                    metadata.get("nombre", "")
+                ).strip()
+                
+                if not nombre_completo:
+                    continue  # Sin nombre, no podemos comparar
+                
+                # Normalizar el nombre para comparación
+                nombre_norm = normalizar_texto(nombre_completo)
+                
+                # Dividir el nombre en tokens individuales
+                nombre_tokens = nombre_norm.split()
+                nombre_tokens_set = set(nombre_tokens)
+                
+                # Evaluar la coincidencia
+                
+                # 1. Detectar si hay coincidencia exacta (mismo nombre)
+                sim_texto = similitud(query_norm, nombre_norm)
+                
+                # 2. Evaluar si todos los tokens de la consulta están en el nombre
+                tokens_coincidentes = query_tokens.intersection(nombre_tokens_set)
+                ratio_consulta = len(tokens_coincidentes) / len(query_tokens) if query_tokens else 0
+                
+                # 3. Evaluar qué porcentaje del nombre coincide con la consulta
+                ratio_nombre = len(tokens_coincidentes) / len(nombre_tokens) if nombre_tokens else 0
+                
+                # 4. Verificar si hay coincidencia de apellidos
+                # Suponemos que los apellidos son las últimas 1-2 palabras del nombre
+                apellidos_nombre = set(nombre_tokens[-min(2, len(nombre_tokens)):])
+                apellidos_query = set()
+                if len(query_tokens) >= 2:
+                    # Si la consulta tiene al menos 2 palabras, consideramos posibles apellidos
+                    apellidos_query = set(list(query_tokens)[-min(2, len(query_tokens)):])
+                coincidencia_apellidos = len(apellidos_nombre.intersection(apellidos_query))
+                
+                # 5. Verificar coincidencia de nombre de pila (primera palabra)
+                nombre_pila_coincide = False
+                if nombre_tokens and query_tokens:
+                    nombre_pila = nombre_tokens[0]
+                    if nombre_pila in query_tokens:
+                        nombre_pila_coincide = True
+                
+                # Construir el resumen del registro
+                resumen = [f"{k}: {v}" for k, v in metadata.items() 
+                          if k not in ['fuente', 'archivo', 'fila_excel'] and v]
+                texto_resultado = f"Encontrado en {fuente}:\n" + "\n".join(resumen)
+                
+                # Clasificación de resultados basada en la calidad de coincidencia
+                
+                # Coincidencia exacta o casi exacta
+                if sim_texto > 0.9 or (ratio_consulta > 0.9 and ratio_nombre > 0.9):
+                    resultados_por_categoria["exactos"].append({
+                        "texto": f"Coincidencia exacta: {texto_resultado}",
+                        "score": sim_texto + 0.1,  # Bonificación para exactos
+                        "fuente": fuente
+                    })
+                
+                # Todos los tokens de la consulta están en el nombre
+                elif ratio_consulta > 0.95:
+                    resultados_por_categoria["completos"].append({
+                        "texto": f"Coincidencia completa: {texto_resultado}",
+                        "score": ratio_consulta * 0.9 + ratio_nombre * 0.1,
+                        "fuente": fuente
+                    })
+                
+                # Coincidencia de apellidos significativa (al menos un apellido completo)
+                elif coincidencia_apellidos > 0 and ratio_consulta >= 0.5:
+                    resultados_por_categoria["parciales_alta"].append({
+                        "texto": f"Coincidencia parcial: {texto_resultado}",
+                        "score": 0.7 + (coincidencia_apellidos * 0.15) + (ratio_consulta * 0.15),
+                        "fuente": fuente
+                    })
+                
+                # Coincidencia de nombre de pila y tokens significativos
+                elif nombre_pila_coincide and len(tokens_coincidentes) >= 1:
+                    resultados_por_categoria["parciales_alta"].append({
+                        "texto": f"Coincidencia parcial: {texto_resultado}",
+                        "score": 0.65 + (ratio_consulta * 0.35),
+                        "fuente": fuente
+                    })
+                
+                # Coincidencia parcial básica (al menos un token importante)
+                elif len(tokens_coincidentes) >= 1 and any(token in nombre_tokens_set for token in query_tokens):
+                    resultados_por_categoria["parciales_media"].append({
+                        "texto": f"Coincidencia parcial: {texto_resultado}",
+                        "score": 0.4 + (ratio_consulta * 0.6),
+                        "fuente": fuente
+                    })
+                
+                # Coincidencias de baja confianza pero potencialmente útiles
+                elif tokens_coincidentes and sim_texto > 0.3:
+                    resultados_por_categoria["posibles"].append({
+                        "texto": f"Posible coincidencia: {texto_resultado}",
+                        "score": sim_texto,
+                        "fuente": fuente
+                    })
+                
+                # Marcar como procesado
+                registros_encontrados.add(id_registro)
+                
+            # Búsqueda adicional para apellidos específicos (si la consulta es corta)
+            if len(query_tokens) <= 2 and len(query.strip()) > 3:
+                # Intentar una segunda estrategia de búsqueda directa en los datos
+                for node_id, doc in index.docstore.docs.items():
+                    metadata = doc.metadata
+                    if not metadata or "nombre" not in metadata and "nombre_completo" not in metadata:
+                        continue
+                    
+                    id_registro = str(metadata.get("id", "")) + str(metadata.get("fila_origen", ""))
+                    if not id_registro:
+                        id_registro = node_id
+                    
+                    # Si ya lo procesamos, saltar
+                    if id_registro in registros_encontrados:
+                        continue
+                    
+                    nombre_completo = (
+                        metadata.get("nombre_completo", "") or 
+                        metadata.get("nombre completo", "") or 
+                        metadata.get("nombre", "")
+                    ).strip()
+                    
+                    if not nombre_completo:
+                        continue
+                    
+                    nombre_norm = normalizar_texto(nombre_completo)
+                    
+                    # Buscar directamente la aparición de la consulta como substring
+                    if query_norm in nombre_norm:
+                        resumen = [f"{k}: {v}" for k, v in metadata.items() 
+                                if k not in ['fuente', 'archivo', 'fila_excel'] and v]
+                        texto_resultado = f"Encontrado en {fuente}:\n" + "\n".join(resumen)
+                        
+                        # Determinar el tipo de coincidencia basado en posición
+                        if nombre_norm.startswith(query_norm + " "):
+                            # Coincide con el nombre de pila
+                            resultados_por_categoria["parciales_alta"].append({
+                                "texto": f"Coincidencia parcial: {texto_resultado}",
+                                "score": 0.75,
+                                "fuente": fuente
+                            })
+                        elif nombre_norm.endswith(" " + query_norm):
+                            # Coincide con el último apellido
+                            resultados_por_categoria["parciales_alta"].append({
+                                "texto": f"Coincidencia parcial: {texto_resultado}",
+                                "score": 0.8,
+                                "fuente": fuente
+                            })
+                        elif " " + query_norm + " " in nombre_norm:
+                            # Coincide con una palabra interna (apellido o segundo nombre)
+                            resultados_por_categoria["parciales_alta"].append({
+                                "texto": f"Coincidencia parcial: {texto_resultado}",
+                                "score": 0.7,
+                                "fuente": fuente
+                            })
+                        else:
+                            # Otra coincidencia de substring
+                            resultados_por_categoria["parciales_media"].append({
+                                "texto": f"Coincidencia parcial: {texto_resultado}",
+                                "score": 0.5,
+                                "fuente": fuente
+                            })
+                        
+                        registros_encontrados.add(id_registro)
+        
+        except Exception as e:
+            print(f"Error al buscar en índice {fuente}: {e}")
+            continue
+    
+    # Compilar respuesta final, priorizando por categoría y luego por score
+    todas_respuestas = []
+    
+    # Agregar resultados exactos
+    if resultados_por_categoria["exactos"]:
+        resultados_ordenados = sorted(resultados_por_categoria["exactos"], 
+                                      key=lambda x: x["score"], reverse=True)
+        todas_respuestas.append("🔍 COINCIDENCIAS EXACTAS:")
+        for res in resultados_ordenados[:5]:  # Aumentar a 5 máximo
+            todas_respuestas.append(res["texto"])
+    
+    # Agregar resultados completos
+    if resultados_por_categoria["completos"]:
+        resultados_ordenados = sorted(resultados_por_categoria["completos"], 
+                                     key=lambda x: x["score"], reverse=True)
+        todas_respuestas.append("\n🔍 COINCIDENCIAS COMPLETAS:")
+        for res in resultados_ordenados[:5]:  # Aumentar a 5 máximo
+            todas_respuestas.append(res["texto"])
+    
+    # Agregar coincidencias parciales altas
+    if resultados_por_categoria["parciales_alta"]:
+        resultados_ordenados = sorted(resultados_por_categoria["parciales_alta"], 
+                                     key=lambda x: x["score"], reverse=True)
+        todas_respuestas.append("\n🔍 COINCIDENCIAS PARCIALES SIGNIFICATIVAS:")
+        for res in resultados_ordenados[:8]:  # Aumentar a 8 máximo
+            todas_respuestas.append(res["texto"])
+    
+    # Agregar coincidencias parciales medias
+    if resultados_por_categoria["parciales_media"]:
+        resultados_ordenados = sorted(resultados_por_categoria["parciales_media"], 
+                                     key=lambda x: x["score"], reverse=True)
+        todas_respuestas.append("\n🔍 COINCIDENCIAS PARCIALES:")
+        for res in resultados_ordenados[:5]:  # Hasta 5 resultados
+            todas_respuestas.append(res["texto"])
+    
+    # Si no hay suficientes resultados, agregar posibles coincidencias
+    if len(todas_respuestas) < 3 and resultados_por_categoria["posibles"]:
+        resultados_ordenados = sorted(resultados_por_categoria["posibles"], 
+                                     key=lambda x: x["score"], reverse=True)
+        todas_respuestas.append("\n🔍 POSIBLES COINCIDENCIAS (baja confianza):")
+        for res in resultados_ordenados[:3]:  # Limitar a 3
+            todas_respuestas.append(res["texto"])
+    
+    # Si no se encontró nada
+    if not todas_respuestas:
+        return f"No se encontraron coincidencias para '{query}' en ninguna fuente."
+    
+    # Componer respuesta final
+    return "\n\n".join(todas_respuestas)
     
 busqueda_global_tool = FunctionTool.from_defaults(
     fn=buscar_nombre,
     name="buscar_nombre",
     description=(
         "Usa esta herramienta para encontrar información completa de una persona en todas las bases, "
-        "cuando el usuario da el nombre completo. Por ejemplo: 'Dame la información de Juan Pérez', "
-        "'¿Qué sabes de Adrian Lino Marmolejo?'."
+        "cuando el usuario da el nombre completo o parcial. Por ejemplo: 'Dame la información de Juan', "
+        "'¿Qué sabes de Pérez?', 'Busca González', 'Encuentra a María Pérez'."
     )
 )
 all_tools.insert(0, busqueda_global_tool)
@@ -994,16 +1259,25 @@ while True:
         continue
 
     try:
+        # Analizar la consulta
         analisis = interpretar_pregunta_llm(prompt)
         tipo = analisis.get("tipo_busqueda")
         campo = analisis.get("campo")
         valor = analisis.get("valor")
+        
+        print(f"[INFO] Análisis: tipo={tipo}, campo={campo}, valor={valor}")
+        
+        # Verificar que valor no sea None antes de continuar
+        if valor is None:
+            print("[ERROR] No se pudo extraer un valor de la consulta. Usando texto completo.")
+            valor = prompt
 
+        # Procesar según el tipo de consulta
         if tipo == "direccion":
             respuesta_herramienta = buscar_direccion_combinada(valor)
 
         elif tipo == "telefono" and campo == "telefono_completo" and valor:
-            print(f"[LLM] Búsqueda telefónica solo si el campo es telefono_completo")
+            print(f"[LLM] Búsqueda telefónica para valor: {valor}")
             respuesta_herramienta = buscar_numero_telefono(valor)
 
         elif tipo == "atributo" and campo and valor:
@@ -1011,13 +1285,20 @@ while True:
             respuesta_herramienta = buscar_atributo(campo, valor, carpeta_indices=ruta_indices)
 
         elif tipo == "nombre" and valor:
+            print(f"[LLM] Búsqueda de nombre: {valor}")
             respuesta_herramienta = buscar_nombre(valor)
 
         else:
-            print(f"[LLM] Sin análisis claro, intentando fallback con buscar_campos_inteligente")
-            campos_disponibles = list(campos_detectados)
-            campos_probables = sugerir_campos(valor, campos_disponibles)
-            respuesta_herramienta = buscar_campos_inteligente(valor, carpeta_indices=ruta_indices, campos_ordenados=campos_probables)
+            print(f"[LLM] Sin análisis claro, intentando fallback con búsqueda de nombre")
+            # Primero intentar búsqueda por nombre (más común y útil como fallback)
+            respuesta_herramienta = buscar_nombre(valor)
+            
+            # Si no hay resultados, intentar búsqueda por campos
+            if "No se encontraron coincidencias" in respuesta_herramienta:
+                print(f"[LLM] Sin resultados de nombre, probando campos inteligentes")
+                campos_disponibles = list(campos_detectados)
+                campos_probables = sugerir_campos(valor, campos_disponibles)
+                respuesta_herramienta = buscar_campos_inteligente(valor, carpeta_indices=ruta_indices, campos_ordenados=campos_probables)
 
         print(f"\n📄Resultado:\n{respuesta_herramienta}\n")
 
@@ -1027,6 +1308,8 @@ while True:
         traceback.print_exc()
 
         try:
+            # Intento de recuperación usando el agente React
+            print("Intentando recuperación con agente React...")
             respuesta_agente = agent.query(prompt)
             print(f"\n📄Resultado (procesado por agente fallback):\n{respuesta_agente}\n")
         except Exception as e2:
