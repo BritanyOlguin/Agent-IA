@@ -488,87 +488,639 @@ for campo in campos_detectados:
 
 llm_clasificador = pipeline("text-generation", model=model, tokenizer=tokenizer)
 
-def interpretar_pregunta_llm(prompt: str) -> dict:
+def interpretar_pregunta_llm(prompt: str, llm_clasificador) -> dict:
     """
-    Analiza la pregunta del usuario y extrae tipo de búsqueda, campo y valor.
-    Mejorado para detectar mejor las consultas de nombres propios.
+    Analizador avanzado de intenciones que combina técnicas de NLP básicas con LLM
+    para entender mejor la intención del usuario independientemente de la formulación.
     """
-    # Verificación rápida de patrones comunes para nombres
     prompt_lower = prompt.lower()
     
-    # Patrones para detectar rápidamente consultas de nombre
-    patrones_nombre = [
-        r"(?:dame|muestra|busca|encuentra|quiero|necesito)?\s+(?:toda)?\s*(?:la)?\s+información\s+(?:de|sobre)\s+([A-Za-zÁÉÍÓÚáéíóúÑñ\s]+)",
-        r"(?:qué|que)\s+(?:sabes|información\s+tienes)\s+(?:de|sobre)\s+([A-Za-zÁÉÍÓÚáéíóúÑñ\s]+)",
-        r"busca(?:r|me)?\s+(?:a)?\s+([A-Za-zÁÉÍÓÚáéíóúÑñ\s]+)",
-        r"encuentra\s+(?:a)?\s+([A-Za-zÁÉÍÓÚáéíóúÑñ\s]+)"
-    ]
+    # 1. Pre-procesamiento y análisis rápido con patrones comunes
     
-    # Verificar patrones de nombre primero (optimización)
-    for patron in patrones_nombre:
-        match = re.search(patron, prompt_lower)
+    # Detectores rápidos por categoría
+    es_consulta_telefono = any(palabra in prompt_lower for palabra in [
+        "telefono", "teléfono", "tel", "numero", "número", "celular", "móvil", "movil", "contacto"
+    ]) and re.search(r'\d{6,}', prompt_lower)
+    
+    es_consulta_nombre = (
+        re.search(r'(?:quien|quién|quienes|quiénes) (?:es|son) ([A-Za-zÁÉÍÓÚáéíóúÑñ\s]+)', prompt_lower) or
+        re.search(r'(?:busca|encuentra|dame info|información de|datos de) ([A-Za-zÁÉÍÓÚáéíóúÑñ\s]+)', prompt_lower) or
+        re.search(r'(?:información|info|datos) (?:de|sobre) ([A-Za-zÁÉÍÓÚáéíóúÑñ\s]+)', prompt_lower)
+    ) and not es_consulta_telefono  # Priorizar teléfono si hay conflicto
+    
+    es_consulta_direccion = (
+        ("dirección" in prompt_lower or "direccion" in prompt_lower or "domicilio" in prompt_lower or 
+         "vive en" in prompt_lower or "casa" in prompt_lower or "calle" in prompt_lower) and
+        (re.search(r'\d+', prompt_lower) or  # Tiene algún número
+         any(palabra in prompt_lower for palabra in [
+             "colonia", "sector", "fraccionamiento", "fracc", "avenida", "ave", "av", "blvd", "boulevard"
+         ]))
+    )
+    
+    es_consulta_atributo = (
+        re.search(r'(?:quien|quién) (?:tiene|posee|cuenta con) ([^?]+)', prompt_lower) or
+        "hombres" in prompt_lower or "mujeres" in prompt_lower or "género" in prompt_lower or
+        "genero" in prompt_lower or "profesión" in prompt_lower or "profesion" in prompt_lower or
+        "ocupación" in prompt_lower or "ocupacion" in prompt_lower or "trabajo" in prompt_lower or
+        "tarjeta" in prompt_lower or "curp" in prompt_lower or "rfc" in prompt_lower or
+        "clave" in prompt_lower or "ife" in prompt_lower
+    )
+    
+    # 2. Decisión rápida para casos claros
+    
+    # Si tenemos una clasificación clara, podemos retornar directamente
+    if es_consulta_telefono:
+        numeros = re.findall(r'\d{6,}', prompt_lower)
+        if numeros:
+            return {
+                "tipo_busqueda": "telefono",
+                "campo": "telefono_completo",
+                "valor": numeros[0]
+            }
+    
+    if es_consulta_direccion:
+        # Extraer la dirección con técnicas básicas
+        texto_direccion = extraer_texto_direccion(prompt)  # Asumiendo que esta función existe
+        return {
+            "tipo_busqueda": "direccion",
+            "campo": "direccion", 
+            "valor": texto_direccion
+        }
+    
+    if es_consulta_nombre and not es_consulta_direccion:  # Priorizar dirección si hay conflicto
+        # Extraer el nombre
+        match = None
+        for patron in [
+            r'(?:quien|quién|quienes|quiénes) (?:es|son) ([A-Za-zÁÉÍÓÚáéíóúÑñ\s]+)',
+            r'(?:busca|encuentra|dame info|información de|datos de) ([A-Za-zÁÉÍÓÚáéíóúÑñ\s]+)',
+            r'(?:información|info|datos) (?:de|sobre) ([A-Za-zÁÉÍÓÚáéíóúÑñ\s]+)'
+        ]:
+            match = re.search(patron, prompt_lower)
+            if match:
+                break
+        
         if match:
             nombre = match.group(1).strip()
-            if len(nombre) > 0 and not nombre.isdigit():
-                # Si parece un nombre, retornar directamente
+            # Filtrar palabras comunes que no forman parte del nombre
+            palabras_filtrar = ["información", "info", "datos", "usuario", "persona", "registro", "la", "el", "de"]
+            for palabra in palabras_filtrar:
+                nombre = nombre.replace(f" {palabra} ", " ").strip()
+            
+            if nombre and len(nombre) > 2:  # Evitar nombres demasiado cortos
                 return {
                     "tipo_busqueda": "nombre",
                     "campo": "nombre_completo",
                     "valor": nombre
                 }
-
-    # Si no se detecta un patrón de nombre, continuar con LLM
+    
+    # 3. Para casos más ambiguos, usar el LLM con un contexto mejorado
+    
     system_prompt = (
-        "Eres un asistente que analiza preguntas del usuario. Tu tarea es extraer:\n"
-        "- 'tipo_busqueda': puede ser 'nombre', 'direccion', 'telefono' o 'atributo'.\n"
-        "- 'campo': si aplica, como 'telefono', 'municipio', 'sexo', 'ocupacion', 'clave ife' etc.\n"
-        "- 'valor': el dato específico mencionado en la pregunta.\n\n"
-        "REGLAS:\n"
-        "- Si la pregunta es sobre un número telefónico o pregunta por teléfono, usa tipo_busqueda='telefono', campo='telefono_completo', valor='número mencionado', incluso si el número es corto o incompleto.\n"
-        "- Si la pregunta contiene frases como 'de quién es este número', 'quién tiene este teléfono', o incluye la palabra 'teléfono' junto con algún número, siempre asigna tipo_busqueda='telefono'.\n" 
-        "- Si solo se proporciona un valor alfanumérico sin especificar campo, usa campo='' (vacío).\n"
-        "- Si la pregunta es sobre 'hombres' o 'mujeres', usa tipo_busqueda='atributo', campo='sexo', valor='M' o 'F'.\n"
-        "- Si la pregunta es sobre ocupación/profesión, usa tipo_busqueda='atributo', campo='ocupacion', valor='profesión mencionada'.\n"
-        "- Si la pregunta es sobre tarjeta, usa tipo_busqueda='atributo', campo='tarjeta', valor='numeros mencionados'.\n"
-        "- Si la pregunta contiene nombres propios como 'Juan', 'María', 'González', asigna tipo_busqueda='nombre'.\n"
-        f"Pregunta: {prompt}\n"
-        "Responde solo con un JSON válido. No agregues explicaciones ni comentarios."
+        "Eres un clasificador de intenciones que analiza consultas de usuarios para un sistema de búsqueda de personas. "
+        "Tu tarea es extraer:\n"
+        "- 'tipo_busqueda': debe ser uno de estos valores exactamente: 'nombre', 'direccion', 'telefono' o 'atributo'.\n"
+        "- 'campo': el campo específico relevante para la búsqueda como 'telefono', 'municipio', 'sexo', 'ocupacion', 'clave ife' etc.\n"
+        "- 'valor': el dato específico mencionado en la consulta, sin palabras de pregunta.\n\n"
+        "REGLAS IMPORTANTES:\n"
+        "1. PRIORIZA TELEFONO si se menciona un número de varios dígitos junto con palabras como 'teléfono', 'tel', 'número', 'contacto'.\n"
+        "2. PRIORIZA DIRECCION si se menciona 'vive en', 'domicilio', 'calle', 'colonia' o términos similares, especialmente con números.\n"
+        "3. PRIORIZA NOMBRE si hay palabras que parecen nombres propios (capitalizados) o se busca información general sobre alguien.\n"
+        "4. USA ATRIBUTO para consultas sobre características como 'sexo', 'ocupación', o identificadores (CURP, RFC, tarjeta).\n"
+        "5. Si la consulta es ambigua, selecciona el tipo de búsqueda más probable según el contexto.\n"
+        "6. Para VALOR, extrae SOLO la información relevante, sin palabras de pregunta ni verbos auxiliares.\n"
+        f"Consulta: {prompt}\n"
+        "Responde con un JSON válido que contenga tipo_busqueda, campo y valor."
     )
     
     try:
+        # Se asume que llm_clasificador es un modelo de lenguaje que puede generar texto
         salida_cruda = llm_clasificador(system_prompt, max_new_tokens=256, return_full_text=False)[0]['generated_text']
         match = re.search(r'\{[\s\S]*?\}', salida_cruda)
         if match:
             json_text = match.group(0)
             resultado = json.loads(json_text)
             
-            # Verificar si el valor es None o vacío
+            # Verificación y corrección de valores
             if resultado.get("valor") is None or resultado.get("valor") == "":
-                # Para búsquedas de nombre, extraer el valor usando heurísticas
+                # Extracción fallback basada en tipo
                 if resultado.get("tipo_busqueda") == "nombre":
-                    # Intentar obtener el nombre de la consulta
-                    palabras = prompt.split()
-                    # Tomar las últimas 1-3 palabras como posible nombre
-                    posible_nombre = " ".join(palabras[-min(3, len(palabras)):])
-                    resultado["valor"] = posible_nombre
+                    palabras = [p for p in prompt.split() if len(p) > 2 and p[0].isupper()]
+                    if palabras:
+                        resultado["valor"] = " ".join(palabras)
+                    else:
+                        # Si no hay palabras capitalizadas, tomar las últimas palabras
+                        palabras = prompt.split()
+                        resultado["valor"] = " ".join(palabras[-min(3, len(palabras)):])
                 else:
                     # Valor por defecto para evitar errores
-                    resultado["valor"] = prompt
+                    resultado["valor"] = extraer_valor(prompt)  # Asumiendo que esta función existe
             
             return resultado
         else:
-            print("[⚠️ LLM] No se detectó JSON válido.")
+            print("[⚠️ LLM] No se detectó JSON válido en la respuesta.")
     except Exception as e:
-        print(f"[⚠️ LLM] Error al decodificar JSON: {e}")
-
-    # En caso de error, intentar detectar nombres propios como último recurso
-    palabras = prompt.split()
-    for palabra in palabras:
-        if palabra[0].isupper() and len(palabra) > 2 and palabra.isalpha():
-            return {"tipo_busqueda": "nombre", "campo": "nombre_completo", "valor": palabra}
+        print(f"[⚠️ LLM] Error en el análisis LLM: {e}")
     
-    # Fallback final: devolver el prompt completo como valor
+    # 4. Fallback final: análisis básico de la consulta
+    
+    # Si todo lo anterior falla, intentar una última estrategia básica
+    # Extraer números grandes (posible teléfono)
+    numeros = re.findall(r'\b\d{7,}\b', prompt)
+    if numeros:
+        return {"tipo_busqueda": "telefono", "campo": "telefono_completo", "valor": numeros[0]}
+    
+    # Buscar posibles nombres propios
+    palabras = prompt.split()
+    nombres_posibles = []
+    for palabra in palabras:
+        if len(palabra) > 2 and palabra[0].isupper() and palabra.isalpha():
+            nombres_posibles.append(palabra)
+    
+    if nombres_posibles:
+        return {"tipo_busqueda": "nombre", "campo": "nombre_completo", "valor": " ".join(nombres_posibles)}
+    
+    # Último recurso: extraer palabras significativas
+    palabras_filtradas = [p for p in palabras if len(p) > 3 and p.lower() not in ["quien", "quién", "como", "cómo"]]
+    if palabras_filtradas:
+        return {"tipo_busqueda": "desconocido", "campo": "", "valor": " ".join(palabras_filtradas)}
+    
+    # Si todo falla, devolver la consulta completa
     return {"tipo_busqueda": "desconocido", "valor": prompt}
+
+def desambiguar_consulta(analisis: dict, prompt: str, llm) -> dict:
+    """
+    Sistema para clarificar consultas ambiguas y determinar el tipo de búsqueda más adecuado.
+    Intenta múltiples estrategias antes de pedir clarificación al usuario.
+    
+    Args:
+        analisis: El resultado inicial del análisis de la consulta
+        prompt: La consulta original del usuario
+        llm: El modelo de lenguaje para análisis avanzado
+    
+    Returns:
+        dict: El análisis refinado con tipo_busqueda, campo y valor
+    """
+    # Si ya tenemos un tipo de búsqueda claro, no es necesario desambiguar
+    if analisis.get("tipo_busqueda") not in ["desconocido", None]:
+        return analisis
+    
+    # Obtener el valor extraído (podría ser la consulta completa)
+    valor = analisis.get("valor", prompt)
+    prompt_lower = prompt.lower()
+    
+    # PASO 1: Intentar desambiguar analizando las características del valor
+    
+    # ¿Es un número largo? Probablemente teléfono
+    if re.match(r'^\d{7,}$', valor.strip()):
+        return {
+            "tipo_busqueda": "telefono",
+            "campo": "telefono_completo",
+            "valor": valor.strip()
+        }
+    
+    # ¿Tiene formato de dirección? (calle con número, colonia, etc.)
+    if any(palabra in prompt_lower for palabra in ["calle", "avenida", "av", "colonia", "domicilio"]) and re.search(r'\d+', prompt_lower):
+        return {
+            "tipo_busqueda": "direccion",
+            "campo": "direccion",
+            "valor": valor
+        }
+    
+    # ¿Contiene palabras que suelen estar en nombres?
+    palabras_nombre = ["apellido", "nombre", "llama", "persona", " sr ", " sra "]
+    if any(palabra in prompt_lower for palabra in palabras_nombre):
+        # Intentar extraer solo la parte que parece ser un nombre
+        palabras = prompt.split()
+        candidatos_nombre = []
+        for palabra in palabras:
+            if len(palabra) > 2 and palabra[0].isupper() and palabra.isalpha():
+                candidatos_nombre.append(palabra)
+        
+        if candidatos_nombre:
+            return {
+                "tipo_busqueda": "nombre",
+                "campo": "nombre_completo",
+                "valor": " ".join(candidatos_nombre)
+            }
+    
+    # ¿Parece ser una consulta sobre un atributo específico?
+    patrones_atributo = {
+        "sexo": ["sexo", "genero", "género", "hombres", "mujeres", "masculino", "femenino"],
+        "ocupacion": ["profesión", "profesion", "ocupación", "ocupacion", "trabajo", "empleo", "oficio"],
+        "curp": ["curp"],
+        "rfc": ["rfc"],
+        "tarjeta": ["tarjeta", "credito", "crédito", "débito", "debito"],
+        "ife": ["ife", "credencial", "electoral"],
+        # Agregar más patrones según sea necesario
+    }
+    
+    for campo, palabras_clave in patrones_atributo.items():
+        if any(palabra in prompt_lower for palabra in palabras_clave):
+            # Extraer el valor del atributo de la consulta
+            valor_extraido = None
+            for palabra in palabras_clave:
+                if palabra in prompt_lower:
+                    idx = prompt_lower.index(palabra)
+                    # Tomar las palabras después de la palabra clave
+                    resto = prompt_lower[idx + len(palabra):].strip()
+                    # Omitir palabras de transición comunes
+                    resto = re.sub(r'^(?:es|son|con|de|del|la|el|los|las|que)\s+', '', resto)
+                    if resto:
+                        valor_extraido = resto
+                        break
+            
+            if valor_extraido:
+                return {
+                    "tipo_busqueda": "atributo",
+                    "campo": campo,
+                    "valor": valor_extraido
+                }
+            else:
+                # Si no podemos extraer un valor específico
+                return {
+                    "tipo_busqueda": "atributo",
+                    "campo": campo,
+                    "valor": "" # El valor queda vacío para consultas genéricas como "busca hombres"
+                }
+    
+    # PASO 2: Si aún es ambiguo, utilizar análisis LLM más profundo
+    
+    system_prompt = (
+        "Estás analizando una consulta ambigua para un sistema de búsqueda de personas. "
+        "La consulta es ambigua y necesitamos determinar el tipo más probable de búsqueda. "
+        "Analiza cuidadosamente el texto y decide entre estas opciones:\n"
+        "1. Búsqueda por NOMBRE - si parece que se busca información general sobre una persona\n"
+        "2. Búsqueda por TELÉFONO - si se menciona o parece referirse a un número telefónico\n"
+        "3. Búsqueda por DIRECCIÓN - si se refiere a donde vive alguien o una ubicación física\n"
+        "4. Búsqueda por ATRIBUTO - si busca personas con una característica específica\n\n"
+        f"Consulta ambigua: '{prompt}'\n\n"
+        "Responde SOLAMENTE con el tipo de búsqueda (NOMBRE, TELEFONO, DIRECCION, o ATRIBUTO) "
+        "seguido de DOS PUNTOS y el valor específico que debería buscarse. Por ejemplo:\n"
+        "NOMBRE: Juan Pérez\n"
+        "o\n"
+        "ATRIBUTO: médico"
+    )
+    
+    try:
+        # Llamar al LLM para desambiguar
+        respuesta = llm(system_prompt, max_new_tokens=128, return_full_text=False)[0]['generated_text']
+        respuesta = respuesta.strip()
+        
+        # Intentar extraer el tipo y valor de la respuesta
+        if ":" in respuesta:
+            tipo, valor_extraido = respuesta.split(":", 1)
+            tipo = tipo.strip().upper()
+            valor_extraido = valor_extraido.strip()
+            
+            # Mapear el tipo de respuesta al formato esperado
+            tipo_mapeado = {
+                "NOMBRE": "nombre",
+                "TELEFONO": "telefono",
+                "DIRECCION": "direccion",
+                "ATRIBUTO": "atributo"
+            }.get(tipo)
+            
+            if tipo_mapeado and valor_extraido:
+                # Determinar el campo según el tipo
+                campo = {"nombre": "nombre_completo", 
+                         "telefono": "telefono_completo", 
+                         "direccion": "direccion",
+                         "atributo": ""}[tipo_mapeado]
+                
+                # Para atributos, intentar determinar el campo específico
+                if tipo_mapeado == "atributo":
+                    # Lógica simplificada, podría mejorarse
+                    if any(palabra in valor_extraido.lower() for palabra in ["hombre", "mujer", "masculino", "femenino"]):
+                        campo = "sexo"
+                    elif any(palabra in prompt_lower for palabra in ["profesión", "trabajo", "ocupación"]):
+                        campo = "ocupacion"
+                    # Otros casos según sea necesario
+                
+                return {
+                    "tipo_busqueda": tipo_mapeado,
+                    "campo": campo,
+                    "valor": valor_extraido
+                }
+    except Exception as e:
+        print(f"[⚠️ LLM] Error en desambiguación LLM: {e}")
+    
+    # PASO 3: Si todo falla, intentar una estrategia de fallback
+    
+    # Priorizar búsqueda por nombre como fallback por ser la más genérica
+    # Extraer palabras que parezcan nombres (capitalizadas)
+    palabras = prompt.split()
+    palabras_capitalizadas = [p for p in palabras if len(p) > 2 and p[0].isupper()]
+    
+    if palabras_capitalizadas:
+        return {
+            "tipo_busqueda": "nombre",
+            "campo": "nombre_completo",
+            "valor": " ".join(palabras_capitalizadas)
+        }
+    
+    # Si no hay palabras capitalizadas, intentar búsqueda genérica con todo el texto
+    return {
+        "tipo_busqueda": "nombre",  # Usar nombre como última opción por ser más flexible
+        "campo": "nombre_completo",
+        "valor": valor
+    }
+
+def ejecutar_consulta_inteligente(prompt: str, analisis, llm_clasificador):
+    """
+    Estrategia inteligente para ejecutar consultas que prueba múltiples herramientas
+    cuando es necesario y devuelve los mejores resultados.
+    
+    Args:
+        prompt: La consulta original del usuario
+        analisis: Resultado del analizador de intenciones
+        llm_clasificador: Modelo para análisis avanzado
+        
+    Returns:
+        str: Resultado de la búsqueda más relevante
+    """
+    tipo = analisis.get("tipo_busqueda")
+    campo = analisis.get("campo", "")
+    valor = analisis.get("valor", "")
+    
+    print(f"[INFO] Ejecutando consulta inteligente - Tipo: {tipo}, Campo: {campo}, Valor: {valor}")
+    
+    # Validar que tengamos un valor para buscar
+    if not valor:
+        print("[ERROR] Valor de búsqueda vacío. Usando texto completo de la consulta.")
+        valor = prompt
+    
+    resultados = {}  # Almacenar resultados de diferentes herramientas
+    herramientas_probadas = set()  # Registro de herramientas ya ejecutadas
+    
+    # ESTRATEGIA 1: Ejecución directa según tipo de consulta
+    
+    if tipo == "direccion":
+        print("[HERRAMIENTA] Ejecutando búsqueda de dirección")
+        resultados["direccion"] = buscar_direccion_combinada(valor)
+        herramientas_probadas.add("direccion")
+    
+    elif tipo == "telefono":
+        print("[HERRAMIENTA] Ejecutando búsqueda de teléfono")
+        resultados["telefono"] = buscar_numero_telefono(valor)
+        herramientas_probadas.add("telefono")
+    
+    elif tipo == "atributo" and campo:
+        print(f"[HERRAMIENTA] Ejecutando búsqueda por atributo: {campo}={valor}")
+        resultados["atributo"] = buscar_atributo(campo, valor, carpeta_indices=ruta_indices)
+        herramientas_probadas.add("atributo")
+    
+    elif tipo == "nombre":
+        print(f"[HERRAMIENTA] Ejecutando búsqueda por nombre: {valor}")
+        resultados["nombre"] = buscar_nombre(valor)
+        herramientas_probadas.add("nombre")
+    
+    # ESTRATEGIA 2: Si no hay resultados claros o la consulta es ambigua, probar múltiples herramientas
+    
+    # Verificar si necesitamos probar más herramientas
+    necesita_mas_busquedas = (
+        not resultados or  # Si no tenemos resultados aún
+        all(("No se encontraron coincidencias" in res or not res) for res in resultados.values()) or  # Si todos son negativos
+        tipo == "desconocido"  # Si el tipo es desconocido
+    )
+    
+    if necesita_mas_busquedas:
+        print("[INFO] Estrategia de múltiples herramientas activada")
+        
+        # Determinar qué herramientas probar, en orden de prioridad
+        herramientas_pendientes = []
+        
+        # 1. Si parece un número, priorizar búsqueda por teléfono
+        if re.search(r'\d{7,}', valor) and "telefono" not in herramientas_probadas:
+            herramientas_pendientes.append(("telefono", None))
+        
+        # 2. Después intentar búsqueda por nombre (más común)
+        if "nombre" not in herramientas_probadas:
+            herramientas_pendientes.append(("nombre", None))
+        
+        # 3. Si hay indicios de dirección, agregar a la lista
+        if (re.search(r'\d+', valor) or 
+            any(palabra in prompt.lower() for palabra in ["calle", "colonia", "avenida"])) and "direccion" not in herramientas_probadas:
+            herramientas_pendientes.append(("direccion", None))
+        
+        # 4. Finalmente probar búsqueda por campos inteligentes
+        if "atributo" not in herramientas_probadas:
+            # Obtener campos probables para este valor
+            campos_disponibles = list(campos_detectados)
+            campos_probables = sugerir_campos(valor, campos_disponibles)
+            herramientas_pendientes.append(("atributo", campos_probables))
+        
+        # Ejecutar las herramientas pendientes
+        for tipo_herramienta, params in herramientas_pendientes:
+            if tipo_herramienta == "telefono":
+                resultados["telefono"] = buscar_numero_telefono(valor)
+            elif tipo_herramienta == "nombre":
+                resultados["nombre"] = buscar_nombre(valor)
+            elif tipo_herramienta == "direccion":
+                resultados["direccion"] = buscar_direccion_combinada(valor)
+            elif tipo_herramienta == "atributo" and params:
+                resultados["atributo"] = buscar_campos_inteligente(valor, carpeta_indices=ruta_indices, campos_ordenados=params)
+    
+    # ESTRATEGIA 3: Análisis y selección del mejor resultado
+    
+    # Filtrar resultados vacíos o negativos
+    resultados_positivos = {
+        k: v for k, v in resultados.items() 
+        if v and "No se encontraron coincidencias" not in v
+    }
+    
+    if not resultados_positivos:
+        # Si no hay resultados positivos, devolver un mensaje claro
+        return f"No se encontraron coincidencias para '{valor}' en ninguna de las herramientas. Por favor, intenta con otra consulta más específica."
+    
+    # Si solo hay un resultado positivo, devolverlo directamente
+    if len(resultados_positivos) == 1:
+        tipo_busqueda, respuesta = list(resultados_positivos.items())[0]
+        return respuesta
+    
+    # Si hay múltiples resultados positivos, evaluarlos y seleccionar el mejor
+    
+    # Función para evaluar la calidad de un resultado
+    def evaluar_calidad(texto_resultado):
+        # Más coincidencias/resultados = mejor calidad
+        num_coincidencias = texto_resultado.count("Coincidencia")
+        # Resultados "exactos" son mejores que parciales
+        calidad_coincidencias = texto_resultado.count("exacta") * 2 + texto_resultado.count("parcial")
+        # Más datos por coincidencia = mejor calidad
+        lineas_datos = len(texto_resultado.split("\n"))
+        
+        return num_coincidencias * 10 + calidad_coincidencias * 5 + lineas_datos
+    
+    # Evaluar cada resultado y seleccionar el mejor
+    calidades = {k: evaluar_calidad(v) for k, v in resultados_positivos.items()}
+    mejor_herramienta = max(calidades.items(), key=lambda x: x[1])[0]
+    
+    # Si hay una gran diferencia entre el mejor y el segundo mejor, mostrar solo el mejor
+    valores_calidad = sorted(calidades.values(), reverse=True)
+    diferencia_significativa = len(valores_calidad) < 2 or valores_calidad[0] > valores_calidad[1] * 1.5
+    
+    if diferencia_significativa:
+        # Devolver solo el mejor resultado
+        return resultados_positivos[mejor_herramienta]
+    else:
+        # Combinar los mejores resultados (hasta 2 herramientas)
+        tipos_ordenados = sorted(resultados_positivos.keys(), key=lambda k: calidades.get(k, 0), reverse=True)
+        mejores_tipos = tipos_ordenados[:2]
+        
+        respuesta_combinada = "Se encontraron varios tipos de coincidencias:\n\n"
+        for tipo in mejores_tipos:
+            respuesta_combinada += f"--- RESULTADOS DE BÚSQUEDA POR {tipo.upper()} ---\n"
+            respuesta_combinada += resultados_positivos[tipo]
+            respuesta_combinada += "\n\n"
+        
+        return respuesta_combinada
+    
+def preprocesar_consulta(prompt: str) -> str:
+    """
+    Pre-procesa la consulta del usuario para hacerla más estandarizada
+    y facilitar su posterior análisis.
+    
+    Args:
+        prompt: Consulta original del usuario
+    
+    Returns:
+        str: Consulta pre-procesada
+    """
+    # 1. Normalizar espacios y puntuación
+    prompt = prompt.strip()
+    prompt = re.sub(r'\s+', ' ', prompt)  # Eliminar espacios múltiples
+    prompt = re.sub(r'([.,;:!?])(\w)', r'\1 \2', prompt)  # Espacio después de signos de puntuación
+    
+    # 2. Normalizar caracteres especiales
+    prompt = prompt.replace('á', 'a').replace('é', 'e').replace('í', 'i').replace('ó', 'o').replace('ú', 'u')
+    prompt = prompt.replace('Á', 'A').replace('É', 'E').replace('Í', 'I').replace('Ó', 'O').replace('Ú', 'U')
+    prompt = prompt.replace('ñ', 'n').replace('Ñ', 'N')
+    
+    # 3. Expandir abreviaturas comunes
+    abreviaturas = {
+        'tel': 'telefono',
+        'tel.': 'telefono',
+        'teléf': 'telefono',
+        'teléf.': 'telefono',
+        'núm': 'numero',
+        'núm.': 'numero',
+        'num': 'numero',
+        'num.': 'numero',
+        'dir': 'direccion',
+        'dir.': 'direccion',
+        'direc': 'direccion',
+        'direc.': 'direccion',
+        'col': 'colonia',
+        'col.': 'colonia',
+        'av': 'avenida',
+        'av.': 'avenida',
+        'ave': 'avenida',
+        'ave.': 'avenida',
+        'c.p.': 'codigo postal',
+        'cp': 'codigo postal',
+        'cp.': 'codigo postal',
+        'fracc': 'fraccionamiento',
+        'fracc.': 'fraccionamiento',
+        # Agregar más abreviaturas según sea necesario
+    }
+    
+    palabras = prompt.split()
+    for i, palabra in enumerate(palabras):
+        palabra_lower = palabra.lower()
+        if palabra_lower in abreviaturas:
+            palabras[i] = abreviaturas[palabra_lower]
+    
+    prompt = ' '.join(palabras)
+    
+    # 4. Eliminar palabras vacías al inicio de la consulta
+    palabras_inicio = ['por favor', 'podrias', 'puedes', 'quisiera', 'quiero', 'necesito', 'dame']
+    for palabra in palabras_inicio:
+        if prompt.lower().startswith(palabra):
+            prompt = prompt[len(palabra):].strip()
+    
+    # 5. Convertir preguntas implícitas en explícitas para facilitar análisis
+    prompt_lower = prompt.lower()
+    
+    # Convertir "el teléfono 1234567" a "quién tiene el teléfono 1234567"
+    if (prompt_lower.startswith('el telefono') or prompt_lower.startswith('telefono')) and re.search(r'\d{7,}', prompt_lower):
+        prompt = 'quien tiene ' + prompt
+    
+    # Convertir "la dirección calle X" a "quién vive en calle X"
+    if prompt_lower.startswith('la direccion') or prompt_lower.startswith('direccion'):
+        prompt = 'quien vive en ' + prompt.split('direccion')[1].strip()
+    
+    # Convertir nombres sueltos a consultas por nombre
+    if re.match(r'^[A-Z][a-z]+ [A-Z][a-z]+', prompt) and len(prompt.split()) <= 4:
+        prompt = 'busca informacion de ' + prompt
+    
+    return prompt
+
+def obtener_prompt_clasificacion_con_ejemplos(consulta):
+    """
+    Genera un prompt para clasificación con ejemplos específicos para mejorar la precisión.
+    
+    Args:
+        consulta: La consulta a clasificar
+    
+    Returns:
+        str: Prompt mejorado con ejemplos
+    """
+    return f"""
+    Eres un sistema experto que clasifica consultas para una base de datos de personas. Necesito que clasifiques la siguiente consulta:
+    
+    "{consulta}"
+    
+    Debes determinar:
+    1. El tipo de búsqueda: "nombre", "telefono", "direccion" o "atributo"
+    2. El campo específico (si aplica)
+    3. El valor a buscar
+    
+    EJEMPLOS DE CLASIFICACIÓN CORRECTA:
+    
+    Consulta: "¿Quién es Juan Pérez?"
+    Clasificación: {{"tipo_busqueda": "nombre", "campo": "nombre_completo", "valor": "Juan Pérez"}}
+    
+    Consulta: "Dame información de María González"
+    Clasificación: {{"tipo_busqueda": "nombre", "campo": "nombre_completo", "valor": "María González"}}
+    
+    Consulta: "¿De quién es el teléfono 5544332211?"
+    Clasificación: {{"tipo_busqueda": "telefono", "campo": "telefono_completo", "valor": "5544332211"}}
+    
+    Consulta: "¿A quién pertenece este número: 9988776655?"
+    Clasificación: {{"tipo_busqueda": "telefono", "campo": "telefono_completo", "valor": "9988776655"}}
+    
+    Consulta: "¿Quién vive en Calle Principal 123, Colonia Centro?"
+    Clasificación: {{"tipo_busqueda": "direccion", "campo": "direccion", "valor": "Calle Principal 123, Colonia Centro"}}
+    
+    Consulta: "Busca la dirección Zoquipan 1260, Lagos del Country"
+    Clasificación: {{"tipo_busqueda": "direccion", "campo": "direccion", "valor": "Zoquipan 1260, Lagos del Country"}}
+    
+    Consulta: "¿Quiénes son médicos?"
+    Clasificación: {{"tipo_busqueda": "atributo", "campo": "ocupacion", "valor": "médico"}}
+    
+    Consulta: "Busca mujeres en la base de datos"
+    Clasificación: {{"tipo_busqueda": "atributo", "campo": "sexo", "valor": "F"}}
+    
+    Consulta: "Encuentra personas que vivan en Zapopan"
+    Clasificación: {{"tipo_busqueda": "atributo", "campo": "municipio", "valor": "Zapopan"}}
+    
+    Consulta: "Información de Zoquipan 1271"
+    Clasificación: {{"tipo_busqueda": "direccion", "campo": "direccion", "valor": "Zoquipan 1271"}}
+    
+    Consulta: "La persona en el teléfono 1234567"
+    Clasificación: {{"tipo_busqueda": "telefono", "campo": "telefono_completo", "valor": "1234567"}}
+    
+    Consulta: "Quiero información del domicilio Hidalgo 123"
+    Clasificación: {{"tipo_busqueda": "direccion", "campo": "direccion", "valor": "Hidalgo 123"}}
+    
+    REGLAS IMPORTANTES:
+    - Si la consulta tiene un número telefónico (7+ dígitos) junto a palabras como "teléfono", "número", "contacto", SIEMPRE es tipo "telefono".
+    - Si la consulta menciona "vive en", "domicilio", "calle", "colonia" o términos similares, SIEMPRE es tipo "direccion".
+    - Si la consulta busca información general sobre un nombre propio, es tipo "nombre".
+    - Si busca personas con características específicas (sexo, ocupación, municipio, etc.), es tipo "atributo".
+    - Para VALOR, extrae SOLO la información relevante, sin palabras de pregunta ni verbos auxiliares.
+    
+    Responde con un objeto JSON que contenga exactamente "tipo_busqueda", "campo" y "valor".
+    """
 
 # --- 3) HERRAMIENTA 1: BUSCAR POR NOMBRE COMPLETO ---
 def buscar_nombre(query: str) -> str:
@@ -1394,71 +1946,79 @@ except Exception as e:
     print(f"Error al crear el agente: {e}")
     exit()
 
-print("\n🤖 Agente listo. Escribe tu pregunta o 'salir' para terminar.")
+print("\n🤖 Agente Inteligente Mejorado: Escribe tu pregunta en lenguaje natural o 'salir' para terminar.")
+print("    Ahora puedes preguntar de cualquier forma y el agente entenderá tu intención.")
 
 while True:
-    prompt = input("Pregunta: ")
+    prompt = input("\nPregunta: ")
     if prompt.lower() == 'salir':
         break
     if not prompt:
         continue
 
     try:
-        # Analizar la consulta
-        analisis = interpretar_pregunta_llm(prompt)
-        tipo = analisis.get("tipo_busqueda")
-        campo = analisis.get("campo")
-        valor = analisis.get("valor")
+        # 1. Pre-procesamiento de la consulta
+        prompt_procesado = preprocesar_consulta(prompt)
+        if prompt_procesado != prompt:
+            print(f"[DEBUG] Consulta procesada: {prompt_procesado}")
         
-        print(f"[INFO] Análisis: tipo={tipo}, campo={campo}, valor={valor}")
+        # 2. Análisis de intención con ejemplos
+        prompt_clasificacion = obtener_prompt_clasificacion_con_ejemplos(prompt_procesado)
         
-        # Verificar que valor no sea None antes de continuar
-        if valor is None:
-            print("[ERROR] No se pudo extraer un valor de la consulta. Usando texto completo.")
-            valor = prompt
-
-        # Procesar según el tipo de consulta
-        if tipo == "direccion":
-            respuesta_herramienta = buscar_direccion_combinada(valor)
-
-        elif tipo == "telefono" and campo == "telefono_completo" and valor:
-            print(f"[LLM] Búsqueda telefónica para valor: {valor}")
-            respuesta_herramienta = buscar_numero_telefono(valor)
-
-        elif tipo == "atributo" and campo and valor:
-            print(f"[LLM] Campo detectado: {campo} = {valor}")
-            respuesta_herramienta = buscar_atributo(campo, valor, carpeta_indices=ruta_indices)
-
-        elif tipo == "nombre" and valor:
-            print(f"[LLM] Búsqueda de nombre: {valor}")
-            respuesta_herramienta = buscar_nombre(valor)
-
+        # Llamada al modelo con el prompt mejorado
+        salida_cruda = llm_clasificador(prompt_clasificacion, max_new_tokens=256, return_full_text=False)[0]['generated_text']
+        
+        # Extraer el JSON del resultado
+        match = re.search(r'\{[\s\S]*?\}', salida_cruda)
+        if match:
+            json_text = match.group(0)
+            analisis = json.loads(json_text)
         else:
-            print(f"[LLM] Sin análisis claro, intentando fallback con búsqueda de nombre")
-            # Primero intentar búsqueda por nombre (más común y útil como fallback)
-            respuesta_herramienta = buscar_nombre(valor)
-            
-            # Si no hay resultados, intentar búsqueda por campos
-            if "No se encontraron coincidencias" in respuesta_herramienta:
-                print(f"[LLM] Sin resultados de nombre, probando campos inteligentes")
-                campos_disponibles = list(campos_detectados)
-                campos_probables = sugerir_campos(valor, campos_disponibles)
-                respuesta_herramienta = buscar_campos_inteligente(valor, carpeta_indices=ruta_indices, campos_ordenados=campos_probables)
-
-        print(f"\n📄Resultado:\n{respuesta_herramienta}\n")
+            # Si falla la extracción del JSON, usar el analizador avanzado como fallback
+            print("[INFO] No se pudo extraer JSON del clasificador, usando analizador alternativo...")
+            analisis = interpretar_pregunta_llm(prompt_procesado, llm_clasificador)
+        
+        print(f"[INFO] Análisis: tipo={analisis.get('tipo_busqueda')}, campo={analisis.get('campo')}, valor={analisis.get('valor')}")
+        
+        # 3. Desambiguación si es necesario
+        if analisis.get("tipo_busqueda") in ["desconocido", None] or not analisis.get("valor"):
+            print("[INFO] Consulta ambigua, intentando desambiguar...")
+            analisis = desambiguar_consulta(analisis, prompt_procesado, llm_clasificador)
+            print(f"[INFO] Análisis post-desambiguación: tipo={analisis.get('tipo_busqueda')}, campo={analisis.get('campo')}, valor={analisis.get('valor')}")
+        
+        # 4. Ejecutar consulta con estrategia inteligente
+        print(f"[INFO] Ejecutando búsqueda para '{analisis.get('valor')}' como {analisis.get('tipo_busqueda')}...")
+        respuesta_final = ejecutar_consulta_inteligente(prompt_procesado, analisis, llm_clasificador)
+        
+        # 5. Mostrar resultado al usuario
+        print(f"\n📄 Resultado:\n{respuesta_final}\n")
+        
+        # 6. Análisis de satisfacción (opcional, para mejorar el sistema)
+        if "No se encontraron coincidencias" in respuesta_final:
+            print("\n[SUGERENCIA] Para mejorar los resultados, intenta:")
+            if analisis.get("tipo_busqueda") == "nombre":
+                print("- Usar nombre y apellido completos")
+                print("- Verificar la ortografía del nombre")
+            elif analisis.get("tipo_busqueda") == "direccion":
+                print("- Incluir el número de la dirección")
+                print("- Especificar la colonia o sector")
+            elif analisis.get("tipo_busqueda") == "telefono":
+                print("- Verificar que el número tenga el formato correcto")
+                print("- Incluir el código de área o lada")
 
     except Exception as e:
-        print(f"❌ Ocurrió un error durante la ejecución del agente: {e}")
+        print(f"❌ Error durante la ejecución: {e}")
         import traceback
         traceback.print_exc()
 
         try:
-            # Intento de recuperación usando el agente React
-            print("Intentando recuperación con agente React...")
+            # Fallback final: usar el agente React como último recurso
+            print("Intentando recuperación con agente fallback...")
             respuesta_agente = agent.query(prompt)
-            print(f"\n📄Resultado (procesado por agente fallback):\n{respuesta_agente}\n")
+            print(f"\n📄 Resultado (procesado por agente fallback):\n{respuesta_agente}\n")
         except Exception as e2:
             print(f"❌ También falló el agente fallback: {e2}")
+            print("Lo siento, no pude procesar tu consulta. Por favor, intenta reformularla.")
 
 # --- LIMPIEZA ---
 del llm, embed_model, agent, all_tools, indices
