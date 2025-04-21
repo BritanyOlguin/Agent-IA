@@ -26,6 +26,43 @@ catalogo_inegi_estados = {
     "30": "Veracruz", "31": "Yucatán", "32": "Zacatecas"
 }
 
+# Diccionario de mapeo de abreviaturas de estados a nombres completos
+ESTADOS_ABREVIATURAS = {
+    "DF": "Ciudad de México",
+    "CDMX": "Ciudad de México",
+    "MEX": "Estado de México",
+    "AGS": "Aguascalientes",
+    "BC": "Baja California",
+    "BCS": "Baja California Sur",
+    "CAMP": "Campeche",
+    "COAH": "Coahuila",
+    "COL": "Colima",
+    "CHIS": "Chiapas",
+    "CHIH": "Chihuahua",
+    "DGO": "Durango",
+    "GTO": "Guanajuato",
+    "GRO": "Guerrero",
+    "HGO": "Hidalgo",
+    "JAL": "Jalisco",
+    "MICH": "Michoacán",
+    "MOR": "Morelos",
+    "NAY": "Nayarit",
+    "NL": "Nuevo León",
+    "OAX": "Oaxaca",
+    "PUE": "Puebla",
+    "QRO": "Querétaro",
+    "QROO": "Quintana Roo",
+    "SLP": "San Luis Potosí",
+    "SIN": "Sinaloa",
+    "SON": "Sonora",
+    "TAB": "Tabasco",
+    "TAMPS": "Tamaulipas",
+    "TLAX": "Tlaxcala",
+    "VER": "Veracruz",
+    "YUC": "Yucatán",
+    "ZAC": "Zacatecas"
+}
+
 def traducir_codigo_inegi_a_estado(codigo: str) -> str:
     codigo = codigo.zfill(2)  # Asegura formato "01", "09", etc.
     return catalogo_inegi_estados.get(codigo, codigo)
@@ -263,16 +300,24 @@ for archivo_nombre in os.listdir(carpeta_bd):
                 texto_a_incrustar += f"\ntelefono_completo: {telefono_completo}"
 
 
-            # Reemplazar claves INEGI por nombre de estado en campos específicos
-            campos_estado_numerico = ["estado de origen", "edo registro"]
+            # Agregar después de traducir códigos INEGI
+            campos_estado = ["estado", "estado de origen", "edo registro", "entidad", "edo", "entidad federativa"]
 
             for campo in list(datos_fila_limpios.keys()):
                 campo_normalizado = normalizar_texto(campo)
-                if any(normalizar_texto(c) in campo_normalizado for c in campos_estado_numerico):
+                # Verificar si este es un campo de estado
+                if any(normalizar_texto(c) in campo_normalizado for c in campos_estado):
                     valor = datos_fila_limpios[campo]
-                    if valor.isdigit():
+                    
+                    # Caso 1: Es un código numérico INEGI
+                    if valor.isdigit() and len(valor) <= 2:
                         estado_nombre = traducir_codigo_inegi_a_estado(valor)
-                        datos_fila_limpios[campo] = normalizar_texto(estado_nombre)  # Reemplazar valor
+                        datos_fila_limpios[campo] = normalizar_texto(estado_nombre)
+                    
+                    # Caso 2: Es una abreviatura conocida
+                    elif valor.upper() in ESTADOS_ABREVIATURAS:
+                        estado_nombre = ESTADOS_ABREVIATURAS[valor.upper()]
+                        datos_fila_limpios[campo] = normalizar_texto(estado_nombre)
 
 
             # 3. Si se generó nombre completo, eliminar nombre, paterno, materno
