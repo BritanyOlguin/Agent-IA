@@ -789,53 +789,50 @@ def buscar_nombre(query: str) -> str:
     
     # Compilar respuesta final, priorizando por categoría y luego por score
     todas_respuestas = []
-    
-    # Agregar resultados exactos
-    if resultados_por_categoria["exactos"]:
-        resultados_ordenados = sorted(resultados_por_categoria["exactos"], 
-                                      key=lambda x: x["score"], reverse=True)
+
+    # Ver si hay exactos
+    mostrar_solo_exactos = bool(resultados_por_categoria["exactos"])
+
+    # Exactos
+    if mostrar_solo_exactos:
+        resultados_ordenados = sorted(resultados_por_categoria["exactos"], key=lambda x: x["score"], reverse=True)
         todas_respuestas.append("🔍 COINCIDENCIAS EXACTAS:")
-        for res in resultados_ordenados:  # Aumentar a 5 máximo
+        for res in resultados_ordenados:
             todas_respuestas.append(res["texto"])
-    
-    # Agregar resultados completos
-    if resultados_por_categoria["completos"]:
-        resultados_ordenados = sorted(resultados_por_categoria["completos"], 
-                                     key=lambda x: x["score"], reverse=True)
-        todas_respuestas.append("\n🔍 COINCIDENCIAS COMPLETAS:")
-        for res in resultados_ordenados:  # Aumentar a 5 máximo
-            todas_respuestas.append(res["texto"])
-    
-    # Agregar coincidencias parciales altas
-    if resultados_por_categoria["parciales_alta"]:
-        resultados_ordenados = sorted(resultados_por_categoria["parciales_alta"], 
-                                     key=lambda x: x["score"], reverse=True)
-        todas_respuestas.append("\n🔍 COINCIDENCIAS PARCIALES SIGNIFICATIVAS:")
-        for res in resultados_ordenados:  # Aumentar a 8 máximo
-            todas_respuestas.append(res["texto"])
-    
-    # Agregar coincidencias parciales medias
-    if resultados_por_categoria["parciales_media"]:
-        resultados_ordenados = sorted(resultados_por_categoria["parciales_media"], 
-                                     key=lambda x: x["score"], reverse=True)
-        todas_respuestas.append("\n🔍 COINCIDENCIAS PARCIALES:")
-        for res in resultados_ordenados:  # Hasta 5 resultados
-            todas_respuestas.append(res["texto"])
-    
-    # Si no hay suficientes resultados, agregar posibles coincidencias
-    if len(todas_respuestas) < 3 and resultados_por_categoria["posibles"]:
-        resultados_ordenados = sorted(resultados_por_categoria["posibles"], 
-                                     key=lambda x: x["score"], reverse=True)
-        todas_respuestas.append("\n🔍 POSIBLES COINCIDENCIAS (baja confianza):")
-        for res in resultados_ordenados:  # Limitar a 3
-            todas_respuestas.append(res["texto"])
-    
-    # Si no se encontró nada
+
+    # Solo si NO hay exactos, mostrar lo demás
+    if not mostrar_solo_exactos:
+        if resultados_por_categoria["completos"]:
+            resultados_ordenados = sorted(resultados_por_categoria["completos"], key=lambda x: x["score"], reverse=True)
+            todas_respuestas.append("\n🔍 COINCIDENCIAS COMPLETAS:")
+            for res in resultados_ordenados:
+                todas_respuestas.append(res["texto"])
+
+        if resultados_por_categoria["parciales_alta"]:
+            resultados_ordenados = sorted(resultados_por_categoria["parciales_alta"], key=lambda x: x["score"], reverse=True)
+            todas_respuestas.append("\n🔍 COINCIDENCIAS PARCIALES SIGNIFICATIVAS:")
+            for res in resultados_ordenados:
+                todas_respuestas.append(res["texto"])
+
+        if resultados_por_categoria["parciales_media"]:
+            resultados_ordenados = sorted(resultados_por_categoria["parciales_media"], key=lambda x: x["score"], reverse=True)
+            todas_respuestas.append("\n🔍 COINCIDENCIAS PARCIALES:")
+            for res in resultados_ordenados:
+                todas_respuestas.append(res["texto"])
+
+        if len(todas_respuestas) < 3 and resultados_por_categoria["posibles"]:
+            resultados_ordenados = sorted(resultados_por_categoria["posibles"], key=lambda x: x["score"], reverse=True)
+            todas_respuestas.append("\n🔍 POSIBLES COINCIDENCIAS (baja confianza):")
+            for res in resultados_ordenados:
+                todas_respuestas.append(res["texto"])
+
+    # Si no hay nada de nada
     if not todas_respuestas:
         return f"No se encontraron coincidencias para '{query}' en ninguna fuente."
-    
+
     # Componer respuesta final
     return "\n\n".join(todas_respuestas)
+
     
 busqueda_global_tool = FunctionTool.from_defaults(
     fn=buscar_nombre,
