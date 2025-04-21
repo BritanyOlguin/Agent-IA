@@ -32,7 +32,6 @@ CAMPOS_DIRECCION = ['domicilio', 'calle', 'numero', 'colonia', 'sector', 'munici
 CAMPOS_BUSQUEDA_EXACTA = ['domicilio', 'direccion', 'calle']
 STOP_WORDS = {'de', 'la', 'del', 'los', 'las', 'y', 'a', 'en', 'el', 'col', 'colonia', 'cp', 'sector', 'calzada', 'calz', 'boulevard', 'blvd', 'avenida', 'ave', 'av'}
 UMBRAL_PUNTAJE_MINIMO = 0.55
-SIMILARITY_TOP_K_DIRECCION = 15
 MAX_RESULTADOS_FINALES = 10
 TOLERANCIA_NUMERO_CERCANO = 50
 
@@ -210,11 +209,11 @@ def buscar_campos_inteligente(valor: str, carpeta_indices: str, campos_ordenados
     
     # Para localidades, devolver todos los resultados encontrados
     if es_localidad and resultados:
-        return "\n\n".join(resultados[:15])  # Limitar a 15 resultados para no sobrecargar
+        return "\n\n".join(resultados)  # Limitar a 15 resultados para no sobrecargar
     
     # Para otras búsquedas, devolver los resultados normalmente
     if resultados:
-        return "\n\n".join(resultados[:5])  # Limitar a 5 resultados
+        return "\n\n".join(resultados)  # Limitar a 5 resultados
         
     return f"No se encontraron coincidencias relevantes para el valor '{valor}'."
 
@@ -796,7 +795,7 @@ def buscar_nombre(query: str) -> str:
         resultados_ordenados = sorted(resultados_por_categoria["exactos"], 
                                       key=lambda x: x["score"], reverse=True)
         todas_respuestas.append("🔍 COINCIDENCIAS EXACTAS:")
-        for res in resultados_ordenados[:5]:  # Aumentar a 5 máximo
+        for res in resultados_ordenados:  # Aumentar a 5 máximo
             todas_respuestas.append(res["texto"])
     
     # Agregar resultados completos
@@ -804,7 +803,7 @@ def buscar_nombre(query: str) -> str:
         resultados_ordenados = sorted(resultados_por_categoria["completos"], 
                                      key=lambda x: x["score"], reverse=True)
         todas_respuestas.append("\n🔍 COINCIDENCIAS COMPLETAS:")
-        for res in resultados_ordenados[:5]:  # Aumentar a 5 máximo
+        for res in resultados_ordenados:  # Aumentar a 5 máximo
             todas_respuestas.append(res["texto"])
     
     # Agregar coincidencias parciales altas
@@ -812,7 +811,7 @@ def buscar_nombre(query: str) -> str:
         resultados_ordenados = sorted(resultados_por_categoria["parciales_alta"], 
                                      key=lambda x: x["score"], reverse=True)
         todas_respuestas.append("\n🔍 COINCIDENCIAS PARCIALES SIGNIFICATIVAS:")
-        for res in resultados_ordenados[:8]:  # Aumentar a 8 máximo
+        for res in resultados_ordenados:  # Aumentar a 8 máximo
             todas_respuestas.append(res["texto"])
     
     # Agregar coincidencias parciales medias
@@ -820,7 +819,7 @@ def buscar_nombre(query: str) -> str:
         resultados_ordenados = sorted(resultados_por_categoria["parciales_media"], 
                                      key=lambda x: x["score"], reverse=True)
         todas_respuestas.append("\n🔍 COINCIDENCIAS PARCIALES:")
-        for res in resultados_ordenados[:5]:  # Hasta 5 resultados
+        for res in resultados_ordenados:  # Hasta 5 resultados
             todas_respuestas.append(res["texto"])
     
     # Si no hay suficientes resultados, agregar posibles coincidencias
@@ -828,7 +827,7 @@ def buscar_nombre(query: str) -> str:
         resultados_ordenados = sorted(resultados_por_categoria["posibles"], 
                                      key=lambda x: x["score"], reverse=True)
         todas_respuestas.append("\n🔍 POSIBLES COINCIDENCIAS (baja confianza):")
-        for res in resultados_ordenados[:3]:  # Limitar a 3
+        for res in resultados_ordenados:  # Limitar a 3
             todas_respuestas.append(res["texto"])
     
     # Si no se encontró nada
@@ -1011,10 +1010,6 @@ def buscar_atributo(campo: str, valor: str, carpeta_indices: str) -> str:
                         resultados.append(f"Coincidencia {tipo_coincidencia}{campo_texto} en {fuente}:\n" + "\n".join(resumen))
                         registros_encontrados.add(id_registro)
                         
-                        # Limitar resultados para evitar sobrecarga (solo si no es búsqueda de campo específico)
-                        if not campo_final and len(resultados) >= 15:
-                            break
-            
             except Exception as e:
                 print(f"Error al buscar en índice {fuente}: {e}")
                 continue
@@ -1022,7 +1017,7 @@ def buscar_atributo(campo: str, valor: str, carpeta_indices: str) -> str:
     # Formatear respuesta final
     if resultados:
         total_registros = len(resultados)
-        num_mostrados = min(15, total_registros)  # Limitar a 15 resultados máximo
+        num_mostrados = total_registros # Limitar a 15 resultados máximo
         
         # Mensaje introductorio según el tipo de búsqueda
         if campo:
@@ -1140,11 +1135,12 @@ def buscar_direccion_combinada(texto_direccion: str) -> str:
 
             # --- Estrategia 2: Búsqueda Semántica y Evaluación ---
             #print(f"[DEBUG] Realizando búsqueda semántica general en {fuente}...")
+            top_k_dinamico = min(10000, len(index.docstore.docs))
             retriever_semantico = VectorIndexRetriever(
                 index=index,
-                similarity_top_k=SIMILARITY_TOP_K_DIRECCION # Usar constante específica
+                similarity_top_k=top_k_dinamico
             )
-            consulta_semantica = " ".join(componentes_clave[:5])
+            consulta_semantica = " ".join(componentes_clave)
             if not consulta_semantica: consulta_semantica = texto_direccion_normalizado
 
             nodes_semanticos = retriever_semantico.retrieve(consulta_semantica)
@@ -1282,13 +1278,13 @@ def buscar_direccion_combinada(texto_direccion: str) -> str:
 
     # Si el filtro estricto no dejó nada, mostrar los mejores aunque no lleguen al umbral
     if not resultados_filtrados and resultados_ordenados:
-        resultados_finales = resultados_ordenados[:2] # Mostrar los 2 mejores
+        resultados_finales = resultados_ordenados # Mostrar los 2 mejores
         mensaje_intro = "No se encontraron coincidencias muy relevantes. Mostrando los más cercanos:\n\n"
     elif not resultados_filtrados and not resultados_ordenados:
          return f"No se encontraron coincidencias relevantes para la dirección '{texto_direccion}'."
     else:
         # Usar constante MAX_RESULTADOS_FINALES
-        resultados_finales = resultados_filtrados[:MAX_RESULTADOS_FINALES]
+        resultados_finales = resultados_filtrados
         tipos_encontrados = {res['tipo'] for res in resultados_finales}
         if 'exacta_directa' in tipos_encontrados or 'exacta_semantica' in tipos_encontrados:
              mensaje_intro = "Se encontraron las siguientes coincidencias:\n\n"
@@ -1373,7 +1369,7 @@ def buscar_numero_telefono(valor: str) -> str:
         return f"No se encontraron coincidencias relevantes para el número '{valor}'."
 
     resultados_ordenados = sorted(resultados.values(), key=lambda x: -x['score'])
-    return "Se encontraron las siguientes coincidencias para número telefónico:\n\n" + "\n\n".join([r['texto'] for r in resultados_ordenados[:10]])
+    return "Se encontraron las siguientes coincidencias para número telefónico:\n\n" + "\n\n".join([r['texto'] for r in resultados_ordenados])
 
 buscar_telefono_tool = FunctionTool.from_defaults(
     fn=buscar_numero_telefono,
