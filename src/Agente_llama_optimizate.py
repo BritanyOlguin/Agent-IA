@@ -32,7 +32,6 @@ CAMPOS_DIRECCION = ['domicilio', 'calle', 'numero', 'colonia', 'sector', 'munici
 CAMPOS_BUSQUEDA_EXACTA = ['domicilio', 'direccion', 'calle']
 STOP_WORDS = {'de', 'la', 'del', 'los', 'las', 'y', 'a', 'en', 'el', 'col', 'colonia', 'cp', 'sector', 'calzada', 'calz', 'boulevard', 'blvd', 'avenida', 'ave', 'av'}
 UMBRAL_PUNTAJE_MINIMO = 0.55
-MAX_RESULTADOS_FINALES = 10
 TOLERANCIA_NUMERO_CERCANO = 50
 
 # CONFIGURACIÓN DE DISPOSITIVO Y LLM
@@ -1449,7 +1448,8 @@ def buscar_atributo(campo: str, valor: str, carpeta_indices: str) -> str:
                     filters = MetadataFilters(filters=[
                         ExactMatchFilter(key=campo_final, value=valor_normalizado)
                     ])
-                    retriever = VectorIndexRetriever(index=index, similarity_top_k=5, filters=filters)
+                    top_k_dinamico = min(10000, len(index.docstore.docs))
+                    retriever = VectorIndexRetriever(index=index, similarity_top_k=top_k_dinamico, filters=filters)
                     nodes = retriever.retrieve(f"{campo_final} es {valor}")
 
                     if nodes:
@@ -1832,7 +1832,6 @@ def buscar_direccion_combinada(texto_direccion: str) -> str:
     elif not resultados_filtrados and not resultados_ordenados:
          return f"No se encontraron coincidencias relevantes para la dirección '{texto_direccion}'."
     else:
-        # Usar constante MAX_RESULTADOS_FINALES
         resultados_finales = resultados_filtrados
         tipos_encontrados = {res['tipo'] for res in resultados_finales}
         if 'exacta_directa' in tipos_encontrados or 'exacta_semantica' in tipos_encontrados:
