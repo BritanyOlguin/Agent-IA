@@ -493,6 +493,24 @@ def interpretar_pregunta_llm(prompt: str, llm_clasificador) -> dict:
     para entender mejor la intención del usuario independientemente de la formulación.
     """
     prompt_lower = prompt.lower()
+
+    # Detectar búsqueda por componentes de nombre (nueva funcionalidad)
+    es_busqueda_componentes = (
+        (re.search(r'cuantas?\s+personas\s+(?:de\s+)?nombre\s+([a-zA-ZáéíóúñÑ]+)\s+con', prompt_lower) or
+        re.search(r'quien(?:es)?\s+(?:se\s+llaman?|tienen?|con)\s+(?:nombre\s+)?([a-zA-ZáéíóúñÑ]+)\s+(?:con|y|de)\s+(?:apellidos?|iniciales?)', prompt_lower) or
+        re.search(r'([a-zA-ZáéíóúñÑ]+)\s+con\s+(?:iniciales?|apellidos?)\s+([a-zA-ZáéíóúñÑ])\s+y\s+([a-zA-ZáéíóúñÑ])', prompt_lower) or
+        re.search(r'nombre\s+([a-zA-ZáéíóúñÑ]+)\s+(?:con\s+)?(?:iniciales?|letras?)\s+([a-zA-ZáéíóúñÑ])\s+y\s+([a-zA-ZáéíóúñÑ])', prompt_lower))
+    )
+    
+    # Si es una búsqueda clara por componentes
+    if es_busqueda_componentes:
+        componentes = extraer_componentes_nombre(prompt)
+        if componentes:
+            return {
+                "tipo_busqueda": "nombre_componentes",
+                "campo": "nombre_completo",
+                "valor": " ".join(componentes)
+            }
     
     # 1. Pre-procesamiento y análisis rápido con patrones comunes
     
@@ -666,6 +684,22 @@ def desambiguar_consulta(analisis: dict, prompt: str, llm) -> dict:
     # Obtener el valor extraído (podría ser la consulta completa)
     valor = analisis.get("valor", prompt)
     prompt_lower = prompt.lower()
+
+    patrones_componentes = [
+        r'nombre\s+([a-zA-ZáéíóúñÑ]+)\s+(?:con|y)\s+(?:inicial|letra|apellido)',
+        r'([a-zA-ZáéíóúñÑ]{3,})\s+con\s+([a-zA-ZáéíóúñÑ])\s+y\s+([a-zA-ZáéíóúñÑ])',
+        r'busca\s+(?:a\s+)?([a-zA-ZáéíóúñÑ]{3,})\s+que\s+(?:tenga|con)\s+([a-zA-ZáéíóúñÑ])\s+y\s+([a-zA-ZáéíóúñÑ])'
+    ]
+
+    for patron in patrones_componentes:
+        if re.search(patron, prompt_lower):
+            componentes = extraer_componentes_nombre(prompt)
+            if componentes:
+                return {
+                    "tipo_busqueda": "nombre_componentes",
+                    "campo": "nombre_completo",
+                    "valor": " ".join(componentes)
+                }
     
     # PASO 1: Intentar desambiguar analizando las características del valor
     
@@ -852,6 +886,10 @@ def ejecutar_consulta_inteligente(prompt: str, analisis, llm_clasificador):
     herramientas_probadas = set()  # Registro de herramientas ya ejecutadas
     
     # ESTRATEGIA 1: Ejecución directa según tipo de consulta
+    if tipo == "nombre_componentes":
+        print("[HERRAMIENTA] Ejecutando búsqueda por componentes de nombre")
+        resultados["nombre_componentes"] = buscar_nombre_componentes(valor)
+        herramientas_probadas.add("nombre_componentes")
     
     if tipo == "direccion":
         print("[HERRAMIENTA] Ejecutando búsqueda de dirección")
@@ -1069,7 +1107,7 @@ def obtener_prompt_clasificacion_con_ejemplos(consulta):
     "{consulta}"
     
     Debes determinar:
-    1. El tipo de búsqueda: "nombre", "telefono", "direccion" o "atributo"
+    1. El tipo de búsqueda: "nombre", "telefono", "direccion", "atributo" o "nombre_componentes"
     2. El campo específico (si aplica)
     3. El valor a buscar
     
@@ -1110,6 +1148,18 @@ def obtener_prompt_clasificacion_con_ejemplos(consulta):
     
     Consulta: "Quiero información del domicilio Hidalgo 123"
     Clasificación: {{"tipo_busqueda": "direccion", "campo": "direccion", "valor": "Hidalgo 123"}}
+
+    Consulta: "¿Cuántas personas de nombre Carla con apellidos que empiecen con M y V hay?"
+    Clasificación: {{"tipo_busqueda": "nombre_componentes", "campo": "nombre_completo", "valor": "Carla M V"}}
+    
+    Consulta: "Quién se llama Carla con M y V"
+    Clasificación: {{"tipo_busqueda": "nombre_componentes", "campo": "nombre_completo", "valor": "Carla M V"}}
+    
+    Consulta: "Encuentra personas con nombre Juan y apellidos que inicien con L y P"
+    Clasificación: {{"tipo_busqueda": "nombre_componentes", "campo": "nombre_completo", "valor": "Juan L P"}}
+    
+    Consulta: "Busca María con iniciales A y T"
+    Clasificación: {{"tipo_busqueda": "nombre_componentes", "campo": "nombre_completo", "valor": "María A T"}}
     
     REGLAS IMPORTANTES:
     - Si la consulta tiene un número telefónico (7+ dígitos) junto a palabras como "teléfono", "número", "contacto", SIEMPRE es tipo "telefono".
@@ -1117,6 +1167,9 @@ def obtener_prompt_clasificacion_con_ejemplos(consulta):
     - Si la consulta busca información general sobre un nombre propio, es tipo "nombre".
     - Si busca personas con características específicas (sexo, ocupación, municipio, etc.), es tipo "atributo".
     - Para VALOR, extrae SOLO la información relevante, sin palabras de pregunta ni verbos auxiliares.
+    - Si la consulta busca un nombre completo junto con iniciales o partes de apellidos (como "Carla con M y V"), es tipo "nombre_componentes".
+    - Si la consulta busca personas con un nombre específico y filtradas por iniciales o letras, es "nombre_componentes".
+    - Si la consulta pregunta cuántas personas cumplen con criterios parciales de nombre, es "nombre_componentes".
     
     Responde con un objeto JSON que contenga exactamente "tipo_busqueda", "campo" y "valor".
     """
@@ -1930,8 +1983,287 @@ buscar_telefono_tool = FunctionTool.from_defaults(
 
 all_tools.insert(4, buscar_telefono_tool)
 
+# --- 7) HERRAMIENTA 5: BUSCAR POR INICIALES DEL NOMBRE ---
+def buscar_nombre_componentes(query: str) -> str:
+    """
+    Busca personas por componentes parciales de nombres.
+    Permite buscar por nombre y filtrar por iniciales o partes de apellidos.
+    
+    Por ejemplo:
+    - "Carla con apellidos M y V" 
+    - "Carla M V"
+    - "nombre Carla iniciales M V"
+    
+    Retorna coincidencias que contengan todos los componentes especificados.
+    """
+    print(f"Ejecutando búsqueda por componentes de nombre: '{query}'")
+    
+    # 1. Extraer componentes de la consulta
+    componentes = extraer_componentes_nombre(query)
+    if not componentes:
+        return "No se pudieron identificar componentes de nombre en la consulta. Por favor especifica al menos un nombre o inicial."
+    
+    print(f"Componentes detectados: {componentes}")
+    
+    # 2. Buscar candidatos iniciales por el primer componente (usualmente el nombre)
+    # El primer componente debe aparecer completo, los demás pueden ser iniciales
+    primer_componente = componentes[0]
+    componentes_adicionales = componentes[1:] if len(componentes) > 1 else []
+    
+    # 3. Estructura para almacenar resultados
+    resultados_por_categoria = {
+        "coincidencias_completas": [], # Coinciden todos los componentes exactamente
+        "coincidencias_iniciales": [],  # Algunos componentes coinciden como iniciales
+        "coincidencias_parciales": []   # Hay coincidencias parciales con todos los componentes
+    }
+    
+    registros_encontrados = set()  # Para evitar duplicados
+    
+    # 4. Recorrer todos los índices
+    for fuente, index in indices.items():
+        try:
+            # Usar búsqueda semántica para candidatos iniciales
+            retriever = VectorIndexRetriever(index=index, similarity_top_k=15)  # Mayor top_k para ampliar resultados
+            nodes = retriever.retrieve(primer_componente)
+            
+            # 5. Buscar en todos los documentos si es necesario (búsqueda exhaustiva)
+            todos_docs = index.docstore.docs.items()
+            
+            # Combinar resultados semánticos con búsqueda completa para no perder coincidencias
+            nodos_procesados = set()
+            
+            # Primero procesar nodos de búsqueda semántica
+            for node in nodes:
+                metadata = node.node.metadata
+                id_registro = str(metadata.get("id", "")) + str(metadata.get("fila_origen", ""))
+                if not id_registro:
+                    id_registro = node.node.node_id
+                
+                nodos_procesados.add(id_registro)
+                
+                if id_registro in registros_encontrados:
+                    continue
+                
+                # Verificar coincidencia de componentes
+                resultado = evaluar_coincidencia_componentes(metadata, componentes)
+                if resultado:
+                    categoria, score, texto = resultado
+                    resultados_por_categoria[categoria].append({
+                        "texto": texto,
+                        "score": score,
+                        "fuente": fuente
+                    })
+                    registros_encontrados.add(id_registro)
+            
+            # Luego, complementar con búsqueda exhaustiva en todos los documentos
+            # pero solo si hay pocos resultados hasta ahora, para no hacer búsqueda innecesaria
+            if len(registros_encontrados) < 5:
+                for node_id, doc in todos_docs:
+                    metadata = doc.metadata
+                    id_registro = str(metadata.get("id", "")) + str(metadata.get("fila_origen", ""))
+                    if not id_registro:
+                        id_registro = node_id
+                    
+                    # Evitar reexaminar nodos ya procesados
+                    if id_registro in nodos_procesados or id_registro in registros_encontrados:
+                        continue
+                    
+                    # Verificar coincidencia de componentes
+                    resultado = evaluar_coincidencia_componentes(metadata, componentes)
+                    if resultado:
+                        categoria, score, texto = resultado
+                        resultados_por_categoria[categoria].append({
+                            "texto": texto,
+                            "score": score,
+                            "fuente": fuente
+                        })
+                        registros_encontrados.add(id_registro)
+            
+        except Exception as e:
+            print(f"Error al buscar en índice {fuente}: {e}")
+            continue
+    
+    # 6. Compilar respuesta final
+    todas_respuestas = []
+    total_coincidencias = sum(len(resultados_por_categoria[cat]) for cat in resultados_por_categoria)
+    
+    if total_coincidencias == 0:
+        return f"No se encontraron personas que coincidan con todos los componentes: {', '.join(componentes)}"
+    
+    # Agregar contador al inicio
+    todas_respuestas.append(f"🔍 Se encontraron {total_coincidencias} personas que coinciden con los componentes: {', '.join(componentes)}")
+    
+    # Coincidencias completas
+    if resultados_por_categoria["coincidencias_completas"]:
+        resultados_ordenados = sorted(resultados_por_categoria["coincidencias_completas"], 
+                                      key=lambda x: x["score"], reverse=True)
+        todas_respuestas.append("\n🔍 COINCIDENCIAS EXACTAS:")
+        for res in resultados_ordenados:
+            todas_respuestas.append(res["texto"])
+    
+    # Coincidencias por iniciales
+    if resultados_por_categoria["coincidencias_iniciales"]:
+        resultados_ordenados = sorted(resultados_por_categoria["coincidencias_iniciales"], 
+                                      key=lambda x: x["score"], reverse=True)
+        todas_respuestas.append("\n🔍 COINCIDENCIAS POR INICIALES:")
+        for res in resultados_ordenados:
+            todas_respuestas.append(res["texto"])
+    
+    # Coincidencias parciales
+    if resultados_por_categoria["coincidencias_parciales"]:
+        resultados_ordenados = sorted(resultados_por_categoria["coincidencias_parciales"], 
+                                      key=lambda x: x["score"], reverse=True)
+        todas_respuestas.append("\n🔍 COINCIDENCIAS PARCIALES:")
+        for res in resultados_ordenados:
+            todas_respuestas.append(res["texto"])
+    
+    return "\n\n".join(todas_respuestas)
 
-# --- 7) CREAR Y EJECUTAR EL AGENTE ---
+
+def extraer_componentes_nombre(query: str) -> list:
+    """
+    Extrae componentes de nombre de una consulta natural.
+    Identifica nombres completos e iniciales/componentes parciales.
+    """
+    query_lower = query.lower()
+    
+    # 1. Limpiar la consulta de palabras no relevantes
+    palabras_filtrar = [
+        "quien", "quién", "cuantas", "cuántas", "personas", "nombre", "nombres", 
+        "apellido", "apellidos", "con", "que", "qué", "tienen", "tiene", "hay",
+        "se", "llama", "llaman", "empiezan", "empieza", "inicial", "iniciales",
+        "primer", "primero", "primera", "segundo", "segunda", "de", "y", "o", "la", "el", "los", "las"
+    ]
+    
+    # 2. Extraer patrón específico si existe
+    patrones_extraccion = [
+        r"nombre(?:s)?\s+([a-zA-ZáéíóúüñÁÉÍÓÚÜÑ]+)(?:\s+(?:con|y|que|de|)\s+(?:iniciales?|apellidos?)?(?:\s+que\s+(?:empie(?:za|zan))?)?\s+([a-zA-ZáéíóúüñÁÉÍÓÚÜÑ])(?:\s+y\s+|\s+|\s*,\s*)([a-zA-ZáéíóúüñÁÉÍÓÚÜÑ]))?",
+        r"([a-zA-ZáéíóúüñÁÉÍÓÚÜÑ]{3,})\s+(?:con|y)\s+(?:iniciales?|apellidos?|letras?)?\s+([a-zA-ZáéíóúüñÁÉÍÓÚÜÑ])(?:\s+y\s+|\s+|\s*,\s*)([a-zA-ZáéíóúüñÁÉÍÓÚÜÑ])"
+    ]
+    
+    for patron in patrones_extraccion:
+        match = re.search(patron, query_lower)
+        if match:
+            grupos = match.groups()
+            return [g for g in grupos if g]  # Filtrar None
+    
+    # 3. Análisis general si no hay patrón específico
+    tokens = query_lower.split()
+    componentes = []
+    
+    for token in tokens:
+        if token not in palabras_filtrar and len(token) >= 1:
+            # Normalizar el token
+            token_limpio = token.strip('.,;:!?()"\'').lower()
+            if token_limpio:
+                componentes.append(token_limpio)
+    
+    # 4. Asegurar prioridad de nombres completos al inicio
+    # Normalmente, nombres completos tienen 3+ letras, iniciales solo 1
+    componentes_ordenados = []
+    iniciales = []
+    
+    for comp in componentes:
+        if len(comp) >= 3:
+            componentes_ordenados.append(comp)
+        else:
+            iniciales.append(comp)
+    
+    # Agregar iniciales al final
+    componentes_ordenados.extend(iniciales)
+    
+    return componentes_ordenados
+
+
+def evaluar_coincidencia_componentes(metadata: dict, componentes: list) -> tuple:
+    """
+    Evalúa si un registro coincide con los componentes de nombre buscados.
+    Retorna (categoría, puntuación, texto_resultado) o None si no coincide.
+    """
+    # Obtener el nombre completo del registro
+    nombre_completo = (
+        metadata.get("nombre_completo", "") or 
+        metadata.get("nombre completo", "") or 
+        metadata.get("nombre", "")
+    ).strip()
+    
+    if not nombre_completo:
+        return None
+    
+    # Normalizar nombre para comparación
+    nombre_norm = normalizar_texto(nombre_completo).lower()
+    palabras_nombre = nombre_norm.split()
+    iniciales_nombre = [p[0] for p in palabras_nombre]
+    
+    # Evaluar el primer componente (usualmente el nombre principal)
+    primer_componente = componentes[0].lower()
+    if primer_componente not in nombre_norm and not any(palabra.startswith(primer_componente) for palabra in palabras_nombre):
+        return None  # Si no coincide el componente principal, descartar
+    
+    # Verificar componentes adicionales
+    componentes_adicionales = [c.lower() for c in componentes[1:]]
+    
+    if not componentes_adicionales:
+        # Solo hay un componente y ya verificamos que coincide
+        resumen = [f"{k}: {v}" for k, v in metadata.items() if k not in ['fuente', 'archivo', 'fila_excel'] and v]
+        texto_resultado = "Encontrado:\n" + "\n".join(resumen)
+        return "coincidencias_completas", 1.0, texto_resultado
+    
+    # Contador de coincidencias por tipo
+    coincidencias_completas = 0  # Componente aparece completo
+    coincidencias_iniciales = 0  # Componente coincide con inicial
+    
+    for componente in componentes_adicionales:
+        if len(componente) == 1:
+            # Es una inicial, verificar si coincide con alguna inicial
+            if componente in iniciales_nombre:
+                coincidencias_iniciales += 1
+            else:
+                # No coincide como inicial
+                return None
+        else:
+            # Es un componente más largo, verificar coincidencia parcial
+            if componente in nombre_norm or any(palabra.startswith(componente) for palabra in palabras_nombre):
+                coincidencias_completas += 1
+            elif componente[0] in iniciales_nombre:
+                # Al menos coincide como inicial
+                coincidencias_iniciales += 1
+            else:
+                # No hay coincidencia
+                return None
+    
+    # Determinar categoría y puntaje
+    resumen = [f"{k}: {v}" for k, v in metadata.items() if k not in ['fuente', 'archivo', 'fila_excel'] and v]
+    texto_resultado = "Encontrado:\n" + "\n".join(resumen)
+    
+    if coincidencias_completas == len(componentes_adicionales):
+        # Todas las coincidencias son completas
+        return "coincidencias_completas", 1.0, texto_resultado
+    elif coincidencias_iniciales + coincidencias_completas == len(componentes_adicionales):
+        # Todas coinciden, algunas como iniciales
+        score = 0.8 + (0.2 * (coincidencias_completas / len(componentes_adicionales)))
+        return "coincidencias_iniciales", score, texto_resultado
+    else:
+        # Algunas coincidencias parciales
+        score = 0.5 + (0.2 * ((coincidencias_completas + coincidencias_iniciales) / len(componentes_adicionales)))
+        return "coincidencias_parciales", score, texto_resultado
+    
+# Crear y agregar herramienta de búsqueda por componentes de nombre
+buscar_nombre_componentes_tool = FunctionTool.from_defaults(
+    fn=buscar_nombre_componentes,
+    name="buscar_nombre_componentes",
+    description=(
+        "Usa esta herramienta cuando el usuario busca personas por componentes parciales de nombres. "
+        "Es especialmente útil cuando se busca un nombre específico junto con iniciales o partes de apellidos. "
+        "Por ejemplo: '¿Cuántas personas de nombre Carla con apellidos que empiecen con M y V hay?', "
+        "'Quien se llama Carla con M y V', 'Nombre Juan iniciales L M', o 'María con P y G'."
+    )
+)
+
+# Insertar la herramienta después de la herramienta de búsqueda global
+all_tools.insert(5, buscar_nombre_componentes_tool)
+
+# --- 8) CREAR Y EJECUTAR EL AGENTE ---
 
 # CREAR EL AGENTE REACT
 try:
