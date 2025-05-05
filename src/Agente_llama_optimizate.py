@@ -1189,7 +1189,7 @@ def buscar_nombre(query: str) -> str:
     query_tokens = set(query_norm.split())
     
     # Detectar si es búsqueda parcial (subcadena)
-    es_busqueda_parcial = len(query) <= 5
+    es_busqueda_parcial = len(query_tokens) <= 5
     
     # Estructura para almacenar resultados por categoría
     resultados_por_categoria = {
@@ -1209,8 +1209,7 @@ def buscar_nombre(query: str) -> str:
         try:
             # Usar búsqueda semántica para obtener candidatos iniciales
             # Si es búsqueda parcial, aumentar el top_k para tener más candidatos
-            top_k = 20 if es_busqueda_parcial else 8
-            retriever = VectorIndexRetriever(index=index, similarity_top_k=top_k)
+            retriever = VectorIndexRetriever(index=index, similarity_top_k=8)
             nodes = retriever.retrieve(query)
             
             # Procesar cada nodo encontrado
@@ -1376,7 +1375,7 @@ def buscar_nombre(query: str) -> str:
                     if not nombre_completo:
                         continue
                     
-                    nombre_norm = normalizar_texto(nombre_completo).lower()
+                    nombre_norm = normalizar_texto(nombre_completo)
                     
                     # Verificar si la subcadena está en cualquier parte del nombre
                     if query_norm in nombre_norm:
