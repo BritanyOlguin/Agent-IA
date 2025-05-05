@@ -1205,14 +1205,23 @@ def buscar_nombre(query: str) -> str:
     registros_encontrados = set()
     
     # Recorrer todos los índices
-    for fuente, index in indices.items():
+    for nombre_dir in os.listdir(ruta_indices):
+        ruta_indice = os.path.join(ruta_indices, nombre_dir)
+        if not os.path.isdir(ruta_indice) or not os.path.exists(os.path.join(ruta_indice, "docstore.json")):
+            continue
+
+        fuente = nombre_dir.replace("index_", "")
         try:
-            # Usar búsqueda semántica para obtener candidatos iniciales
-            # Si es búsqueda parcial, aumentar el top_k para tener más candidatos
-            retriever = VectorIndexRetriever(index=index, similarity_top_k=8)
+            # Cargar índice directamente como en buscar_atributo
+            storage_context = StorageContext.from_defaults(persist_dir=ruta_indice)
+            index = load_index_from_storage(storage_context)
+            
+            # Ahora podemos acceder a docstore.docs
+            top_k_dinamico = min(10000, len(index.docstore.docs))
+            retriever = VectorIndexRetriever(index=index, similarity_top_k=top_k_dinamico)
             nodes = retriever.retrieve(query)
             
-            # Procesar cada nodo encontrado
+            # Procesar cada nodo encontra
             for node in nodes:
                 metadata = node.node.metadata
                 
@@ -1274,11 +1283,12 @@ def buscar_nombre(query: str) -> str:
                 coincidencia_substring = False
                 token_con_substring = None
                 
+                coincidencia_en_cualquier_posicion = False
                 # Buscar la subcadena en cada token del nombre
                 for token in nombre_tokens:
-                    if query_norm in token:
-                        coincidencia_substring = True
-                        token_con_substring = token
+                    # Comparar cada token normalizado con la consulta normalizada
+                    if query_norm in token or token in query_norm:
+                        coincidencia_en_cualquier_posicion = True
                         break
                 
                 # Construir el resumen del registro
@@ -1289,23 +1299,31 @@ def buscar_nombre(query: str) -> str:
                 # Clasificación de resultados basada en la calidad de coincidencia
                 
                 # Coincidencia exacta o casi exacta
-                if sim_texto > 0.9 or (ratio_consulta > 0.9 and ratio_nombre > 0.9):
+                if (sim_texto > 0.85 or  
+                    (ratio_consulta > 0.98) or
+                    (len(query_tokens) >= 2 and len(tokens_coincidentes) == len(query_tokens)) or
+                    # Nueva condición añadida para detectar nombres en cualquier posición
+                    (len(query_tokens) == 1 and coincidencia_en_cualquier_posicion)):
+                    
                     resultados_por_categoria["exactos"].append({
                         "texto": f"Coincidencia exacta: {texto_resultado}",
-                        "score": sim_texto + 0.1,  # Bonificación para exactos
+                        "score": sim_texto + (ratio_consulta * 0.2),  
                         "fuente": fuente
                     })
                 
                 # Todos los tokens de la consulta están en el nombre
                 elif ratio_consulta > 0.95:
-                    resultados_por_categoria["completos"].append({
-                        "texto": f"Coincidencia completa: {texto_resultado}",
-                        "score": ratio_consulta * 0.9 + ratio_nombre * 0.1,
-                        "fuente": fuente
-                    })
+                    # Verificar que la consulta no sea demasiado genérica
+                    if len(query_tokens) >= 2 or (len(query_tokens) == 1 and len(list(query_tokens)[0]) >= 4):
+                        resultados_por_categoria["completos"].append({
+                            "texto": f"Coincidencia completa: {texto_resultado}",
+                            "score": ratio_consulta * 0.9 + ratio_nombre * 0.1,
+                            "fuente": fuente
+                        })
                 
                 # Coincidencia de apellidos significativa (al menos un apellido completo)
-                elif coincidencia_apellidos > 0 and ratio_consulta >= 0.5:
+                elif coincidencia_apellidos > 0 and ratio_consulta >= 0.5 and len(query_tokens) > 1:
+                    # Solo incluir si la coincidencia es significativa y se buscaron al menos 2 términos
                     resultados_por_categoria["parciales_alta"].append({
                         "texto": f"Coincidencia parcial: {texto_resultado}",
                         "score": 0.7 + (coincidencia_apellidos * 0.15) + (ratio_consulta * 0.15),
@@ -1408,7 +1426,14 @@ def buscar_nombre(query: str) -> str:
     todas_respuestas = []
 
     # Ver si hay exactos
-    mostrar_solo_exactos = bool(resultados_por_categoria["exactos"])
+    mostrar_solo_exactos = False
+    if resultados_por_categoria["exactos"]:
+        # Si hay exactos y la consulta tenía al menos 2 tokens, mostrar solo exactos
+        if len(query_tokens) >= 2:
+            mostrar_solo_exactos = True
+        # Si hay exactos pero la consulta era muy corta, mostrar exactos y quizás algunos completos
+        else:
+            mostrar_solo_exactos = len(resultados_por_categoria["exactos"]) >= 3
 
     # Exactos
     if mostrar_solo_exactos:
