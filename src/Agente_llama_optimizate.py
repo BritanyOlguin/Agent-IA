@@ -1179,6 +1179,7 @@ def buscar_nombre(query: str) -> str:
     """
     Busca coincidencias de nombres completos o parciales y las retorna ordenadas por relevancia.
     Permite búsquedas por cualquier combinación de nombre/apellidos, en cualquier orden.
+    Ahora también permite búsquedas por subcadena (ej: 'Val' encontrará Valeria, Valentino, etc.)
     """
     print(f"Ejecutando búsqueda de nombre: '{query}'")
     
@@ -1187,12 +1188,16 @@ def buscar_nombre(query: str) -> str:
     query_norm = normalizar_texto(query)
     query_tokens = set(query_norm.split())
     
+    # Detectar si es búsqueda parcial (subcadena)
+    es_busqueda_parcial = len(query) <= 5
+    
     # Estructura para almacenar resultados por categoría
     resultados_por_categoria = {
         "exactos": [],          # Coincidencia exacta o casi exacta 
         "completos": [],        # Todos los tokens de búsqueda están presentes
         "parciales_alta": [],   # Coincidencia significativa (múltiples tokens o apellido completo)
         "parciales_media": [],  # Coincidencia parcial básica
+        "substring": [],        # NUEVA CATEGORÍA: Coincidencias por subcadena como "Val" en "Valeria"
         "posibles": []          # Coincidencias de baja confianza pero potencialmente útiles
     }
     
@@ -1203,7 +1208,9 @@ def buscar_nombre(query: str) -> str:
     for fuente, index in indices.items():
         try:
             # Usar búsqueda semántica para obtener candidatos iniciales
-            retriever = VectorIndexRetriever(index=index, similarity_top_k=8)  # Aumentar para más candidatos
+            # Si es búsqueda parcial, aumentar el top_k para tener más candidatos
+            top_k = 20 if es_busqueda_parcial else 8
+            retriever = VectorIndexRetriever(index=index, similarity_top_k=top_k)
             nodes = retriever.retrieve(query)
             
             # Procesar cada nodo encontrado
@@ -1264,6 +1271,17 @@ def buscar_nombre(query: str) -> str:
                     if nombre_pila in query_tokens:
                         nombre_pila_coincide = True
                 
+                # 6. NUEVO: Verificar si hay coincidencia por subcadena
+                coincidencia_substring = False
+                token_con_substring = None
+                
+                # Buscar la subcadena en cada token del nombre
+                for token in nombre_tokens:
+                    if query_norm in token:
+                        coincidencia_substring = True
+                        token_con_substring = token
+                        break
+                
                 # Construir el resumen del registro
                 resumen = [f"{k}: {v}" for k, v in metadata.items() 
                           if k not in ['fuente', 'archivo', 'fila_excel'] and v]
@@ -1303,6 +1321,14 @@ def buscar_nombre(query: str) -> str:
                         "fuente": fuente
                     })
                 
+                # NUEVO: Coincidencia por subcadena
+                elif coincidencia_substring:
+                    resultados_por_categoria["substring"].append({
+                        "texto": f"Coincidencia por subcadena '{query}' en '{token_con_substring}': {texto_resultado}",
+                        "score": 0.6,  # Puntuación media-alta
+                        "fuente": fuente
+                    })
+                
                 # Coincidencia parcial básica (al menos un token importante)
                 elif len(tokens_coincidentes) >= 1 and any(token in nombre_tokens_set for token in query_tokens):
                     resultados_por_categoria["parciales_media"].append({
@@ -1321,20 +1347,23 @@ def buscar_nombre(query: str) -> str:
                 
                 # Marcar como procesado
                 registros_encontrados.add(id_registro)
+            
+            # NUEVO: Búsqueda exhaustiva adicional específica para subcadenas
+            # Especialmente importante para consultas cortas como "Val"
+            if es_busqueda_parcial:
+                print(f"Realizando búsqueda exhaustiva para subcadena '{query_norm}'...")
                 
-            # Búsqueda adicional para apellidos específicos (si la consulta es corta)
-            if len(query_tokens) <= 2 and len(query.strip()) > 3:
-                # Intentar una segunda estrategia de búsqueda directa en los datos
+                # Recorrer todos los documentos del índice
                 for node_id, doc in index.docstore.docs.items():
                     metadata = doc.metadata
-                    if not metadata or "nombre" not in metadata and "nombre_completo" not in metadata:
+                    if not metadata:
                         continue
                     
                     id_registro = str(metadata.get("id", "")) + str(metadata.get("fila_origen", ""))
                     if not id_registro:
                         id_registro = node_id
                     
-                    # Si ya lo procesamos, saltar
+                    # Si ya lo procesamos, saltarlo
                     if id_registro in registros_encontrados:
                         continue
                     
@@ -1347,43 +1376,28 @@ def buscar_nombre(query: str) -> str:
                     if not nombre_completo:
                         continue
                     
-                    nombre_norm = normalizar_texto(nombre_completo)
+                    nombre_norm = normalizar_texto(nombre_completo).lower()
                     
-                    # Buscar directamente la aparición de la consulta como substring
+                    # Verificar si la subcadena está en cualquier parte del nombre
                     if query_norm in nombre_norm:
+                        # Dividir el nombre para encontrar qué token contiene la subcadena
+                        tokens = nombre_norm.split()
+                        token_con_subcadena = None
+                        
+                        for token in tokens:
+                            if query_norm in token:
+                                token_con_subcadena = token
+                                break
+                        
                         resumen = [f"{k}: {v}" for k, v in metadata.items() 
-                                if k not in ['fuente', 'archivo', 'fila_excel'] and v]
+                                  if k not in ['fuente', 'archivo', 'fila_excel'] and v]
                         texto_resultado = f"Encontrado en {fuente}:\n" + "\n".join(resumen)
                         
-                        # Determinar el tipo de coincidencia basado en posición
-                        if nombre_norm.startswith(query_norm + " "):
-                            # Coincide con el nombre de pila
-                            resultados_por_categoria["parciales_alta"].append({
-                                "texto": f"Coincidencia parcial: {texto_resultado}",
-                                "score": 0.75,
-                                "fuente": fuente
-                            })
-                        elif nombre_norm.endswith(" " + query_norm):
-                            # Coincide con el último apellido
-                            resultados_por_categoria["parciales_alta"].append({
-                                "texto": f"Coincidencia parcial: {texto_resultado}",
-                                "score": 0.8,
-                                "fuente": fuente
-                            })
-                        elif " " + query_norm + " " in nombre_norm:
-                            # Coincide con una palabra interna (apellido o segundo nombre)
-                            resultados_por_categoria["parciales_alta"].append({
-                                "texto": f"Coincidencia parcial: {texto_resultado}",
-                                "score": 0.7,
-                                "fuente": fuente
-                            })
-                        else:
-                            # Otra coincidencia de substring
-                            resultados_por_categoria["parciales_media"].append({
-                                "texto": f"Coincidencia parcial: {texto_resultado}",
-                                "score": 0.5,
-                                "fuente": fuente
-                            })
+                        resultados_por_categoria["substring"].append({
+                            "texto": f"Coincidencia por subcadena '{query}' en '{token_con_subcadena}': {texto_resultado}",
+                            "score": 0.5,  # Puntuación media para resultados de búsqueda exhaustiva
+                            "fuente": fuente
+                        })
                         
                         registros_encontrados.add(id_registro)
         
@@ -1415,6 +1429,13 @@ def buscar_nombre(query: str) -> str:
         if resultados_por_categoria["parciales_alta"]:
             resultados_ordenados = sorted(resultados_por_categoria["parciales_alta"], key=lambda x: x["score"], reverse=True)
             todas_respuestas.append("\n🔍 COINCIDENCIAS PARCIALES SIGNIFICATIVAS:")
+            for res in resultados_ordenados:
+                todas_respuestas.append(res["texto"])
+                
+        # NUEVO: Mostrar coincidencias por subcadena
+        if resultados_por_categoria["substring"]:
+            resultados_ordenados = sorted(resultados_por_categoria["substring"], key=lambda x: x["score"], reverse=True)
+            todas_respuestas.append("\n🔍 COINCIDENCIAS POR SUBCADENA:")
             for res in resultados_ordenados:
                 todas_respuestas.append(res["texto"])
 
