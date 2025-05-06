@@ -13,7 +13,7 @@ import unicodedata
 import re
 import sys
 # Importar la función normalizar_texto desde normalizar_texto.py
-sys.path.append(r"C:\Users\Sistemas\Documents\OKIP\src")
+sys.path.append(r"C:\Users\TEC-INT02\Documents\Agent-IA\src")
 from normalizar_texto import normalizar_texto
 
 catalogo_inegi_estados = {
@@ -110,9 +110,9 @@ def crear_nombre_completo(row):
     return None
 
 # --- CONFIGURACIÓN GLOBAL ---
-ruta_modelo_embeddings = r"C:\Users\Sistemas\Documents\OKIP\models\models--intfloat--e5-large-v2"
-carpeta_bd = r"C:\Users\Sistemas\Documents\OKIP\archivos"
-carpeta_indices = r"C:\Users\Sistemas\Documents\OKIP\llama_index_indices"
+ruta_modelo_embeddings = r"C:\Users\TEC-INT02\Documents\Agent-IA\models\models--intfloat--e5-large-v2"
+carpeta_bd = r"C:\Users\TEC-INT02\Documents\Agent-IA\archivos"
+carpeta_indices = r"C:\Users\TEC-INT02\Documents\Agent-IA\llama_index_indices"
 
 os.makedirs(carpeta_indices, exist_ok=True)
 

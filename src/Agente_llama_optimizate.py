@@ -18,14 +18,14 @@ from transformers import pipeline
 import json
 import sys
 # Importar la función normalizar_texto desde normalizar_texto.py
-sys.path.append(r"C:\Users\Sistemas\Documents\OKIP\src")
+sys.path.append(r"C:\Users\TEC-INT02\Documents\Agent-IA\src")
 from normalizar_texto import normalizar_texto
 import re
 
 # --- 1) CONFIGURACIÓN ---
-ruta_modelo_embeddings = r"C:\Users\Sistemas\Documents\OKIP\models\models--intfloat--e5-large-v2"
-ruta_indices = r"C:\Users\Sistemas\Documents\OKIP\llama_index_indices"
-ruta_modelo_llama3 = r"C:\Users\Sistemas\Documents\OKIP\models\models--meta-llama--Meta-Llama-3-8B-Instruct"
+ruta_modelo_embeddings = r"C:\Users\TEC-INT02\Documents\Agent-IA\models\models--intfloat--e5-large-v2"
+ruta_indices = r"C:\Users\TEC-INT02\Documents\Agent-IA\llama_index_indices"
+ruta_modelo_llama3 = r"C:\Users\TEC-INT02\Documents\Agent-IA\models\models--meta-llama--Meta-Llama-3-8B-Instruct"
 
 # --- Constantes para buscar_direccion_combinada ---
 CAMPOS_DIRECCION = ['domicilio', 'calle', 'numero', 'colonia', 'sector', 'municipio', 'ciudad', 'estado', 'cp', 'direccion', 'campo14', 'domicilio calle', 'codigo postal', 'edo de origen']

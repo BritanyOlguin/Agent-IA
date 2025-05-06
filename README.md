@@ -38,6 +38,8 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 
 venv\src\01_modelDownload.py
 
+Cambiar la ruta si es necesario
+
 6. Descomentar el primer modelo, ejecutar archivo, descomentar el segundo y comentar el primero y asi sucesivamente.
 
 7. Instalar
@@ -65,6 +67,8 @@ pip install llama-index pandas openpyxl sentence-transformers
 pip install llama-index-embeddings-huggingface
 pip install llama-index==0.12.26
 pip install llama-index-cli llama-index-agent-openai llama-index-llms-openai llama-index-readers-file
+pip install llama-index-llms-huggingface
+pip install -U bitsandbytes
 ```
 
 12. Instalar e5-large-v2
