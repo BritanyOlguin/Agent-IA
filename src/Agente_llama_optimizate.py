@@ -485,6 +485,36 @@ for campo in campos_detectados:
 
 llm_clasificador = pipeline("text-generation", model=model, tokenizer=tokenizer)
 
+def convertir_a_mayusculas(texto: str) -> str:
+    """
+    Convierte a mayúsculas el texto de los resultados para presentación al usuario.
+    Preserva formato específico como fechas y estructura.
+    
+    Args:
+        texto: El texto a convertir
+        
+    Returns:
+        str: Texto convertido a mayúsculas
+    """
+    if not texto:
+        return ""
+    
+    lineas = texto.split('\n')
+    lineas_mayusculas = []
+    
+    for linea in lineas:
+        if linea.startswith('🔍') or linea.startswith('---') or 'COINCIDENCIAS' in linea:
+            lineas_mayusculas.append(linea)
+            continue
+            
+        if ':' in linea:
+            clave, valor = linea.split(':', 1)
+            lineas_mayusculas.append(f"{clave.strip().upper()}: {valor.strip().upper()}")
+        else:
+            lineas_mayusculas.append(linea.upper())
+            
+    return '\n'.join(lineas_mayusculas)
+
 def interpretar_pregunta_llm(prompt: str, llm_clasificador) -> dict:
     """
     Analizador avanzado de intenciones que combina técnicas de NLP básicas con LLM
@@ -974,7 +1004,7 @@ def ejecutar_consulta_inteligente(prompt: str, analisis, llm_clasificador):
             respuesta_combinada += resultados_positivos[tipo]
             respuesta_combinada += "\n\n"
         
-        return respuesta_combinada
+        return convertir_a_mayusculas(respuesta_combinada)
     
 def preprocesar_consulta(prompt: str) -> str:
     """
@@ -1395,7 +1425,7 @@ def buscar_nombre(query: str) -> str:
     if not todas_respuestas:
         return f"No se encontraron coincidencias para '{query}' en ninguna fuente."
 
-    return "\n\n".join(todas_respuestas)
+    return convertir_a_mayusculas("\n\n".join(todas_respuestas))
 
     
 busqueda_global_tool = FunctionTool.from_defaults(
@@ -1575,12 +1605,12 @@ def buscar_atributo(campo: str, valor: str, carpeta_indices: str) -> str:
         if total_registros > num_mostrados:
             mensaje_intro += f" Mostrando {num_mostrados} primeros resultados:"
         
-        return mensaje_intro + "\n\n" + "\n\n".join(resultados[:num_mostrados])
+        return convertir_a_mayusculas(mensaje_intro + "\n\n" + "\n\n".join(resultados[:num_mostrados]))
     else:
         if campo:
-            return f"No se encontraron coincidencias para '{campo}: {valor}'."
+            return convertir_a_mayusculas(f"No se encontraron coincidencias para '{campo}: {valor}'.")
         else:
-            return f"No se encontraron coincidencias para el valor '{valor}'."
+            return convertir_a_mayusculas(f"No se encontraron coincidencias para el valor '{valor}'.")
 
 buscar_por_atributo_tool = FunctionTool.from_defaults(
     fn=lambda campo, valor: buscar_atributo(campo, valor, carpeta_indices=ruta_indices),
@@ -1824,7 +1854,7 @@ def buscar_direccion_combinada(texto_direccion: str) -> str:
         texto_limpio = re.sub(r'\s*\(Score: \d+\.\d+\)', '', res['texto_base']).strip() # LIMPIAR SCORE
         textos_resultados.append(texto_limpio)
 
-    return mensaje_intro + "\n\n".join(textos_resultados)
+    return convertir_a_mayusculas(mensaje_intro + "\n\n".join(textos_resultados))
 
 buscar_direccion_tool = FunctionTool.from_defaults(
     fn=buscar_direccion_combinada,
@@ -1891,7 +1921,7 @@ def buscar_numero_telefono(valor: str) -> str:
         return f"No se encontraron coincidencias relevantes para el número '{valor}'."
 
     resultados_ordenados = sorted(resultados.values(), key=lambda x: -x['score'])
-    return "Se encontraron las siguientes coincidencias para número telefónico:\n\n" + "\n\n".join([r['texto'] for r in resultados_ordenados])
+    return convertir_a_mayusculas("Se encontraron las siguientes coincidencias para número telefónico:\n\n" + "\n\n".join([r['texto'] for r in resultados_ordenados]))
 
 buscar_telefono_tool = FunctionTool.from_defaults(
     fn=buscar_numero_telefono,
@@ -2028,7 +2058,7 @@ def buscar_nombre_componentes(query: str) -> str:
         for res in resultados_ordenados:
             todas_respuestas.append(res["texto"])
     
-    return "\n\n".join(todas_respuestas)
+    return convertir_a_mayusculas("\n\n".join(todas_respuestas))
 
 
 def extraer_componentes_nombre(query: str) -> list:
