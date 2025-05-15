@@ -12,9 +12,11 @@ __pycache__/
 models/
 llama_index_banco_bancomer_e5_large/
 archivos/*
+!archivos/.gitkeep
 llama_index_indices/
 fine_tuning/modelos/*
 !fine_tuning/modelos/.gitkeep
 fine_tuning/datos/*
 !fine_tuning/datos/.gitkeep
 feedback/*
+!feedback/.gitkeep
