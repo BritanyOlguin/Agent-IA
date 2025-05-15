@@ -1,22 +1,19 @@
 import os
 import torch
 import gc
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
 from llama_index.core import Settings, VectorStoreIndex, StorageContext, load_index_from_storage
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.llms.huggingface import HuggingFaceLLM
-from llama_index.core.tools import FunctionTool, QueryEngineTool
+from llama_index.core.tools import FunctionTool
 from llama_index.core.agent import ReActAgent
 from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter
 from llama_index.core.retrievers import VectorIndexRetriever
 from difflib import SequenceMatcher
-from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter
-from llama_index.core.retrievers import VectorIndexRetriever
-from llama_index.core import StorageContext, load_index_from_storage
 from typing import Dict, Any, List
-from transformers import pipeline
 import json
 import sys
+from peft import PeftModel
 
 sys.path.append(r"C:\Users\TEC-INT02\Documents\Agent-IA\src")
 from normalizar_texto import normalizar_texto
@@ -26,6 +23,7 @@ import re
 ruta_modelo_embeddings = r"C:\Users\TEC-INT02\Documents\Agent-IA\models\models--intfloat--e5-large-v2"
 ruta_indices = r"C:\Users\TEC-INT02\Documents\Agent-IA\llama_index_indices"
 ruta_modelo_llama3 = r"C:\Users\TEC-INT02\Documents\Agent-IA\models\models--meta-llama--Meta-Llama-3-8B-Instruct"
+ruta_tus_adaptadores_lora = r"C:\Users\TEC-INT02\Documents\Agent-IA\fine_tuning\modelos\llama3-8b-agente-consulta-20250515_1007"
 
 # --- CONSTANTES PARA BUSCAR_DIRECCION_COMBINADA ---
 CAMPOS_DIRECCION = ['domicilio', 'calle', 'numero', 'colonia', 'sector', 'municipio', 'ciudad', 'estado', 'cp', 'direccion', 'campo14', 'domicilio calle', 'codigo postal', 'edo de origen']
@@ -41,6 +39,47 @@ if device == "cpu":
 else:
     print(f"Usando dispositivo para LLM y Embeddings: {device}")
 
+def cargar_modelo_con_lora(ruta_adaptadores: str, ruta_base: str, usar_4bit: bool = False):
+    """Carga el modelo base y luego aplica los adaptadores LoRA entrenados."""
+    print(f"Cargando modelo base original desde: {ruta_base}")
+
+    load_in_8bit = not usar_4bit
+    load_in_4bit_config = usar_4bit
+
+    # CONFIGURACIÓN PARA CUANTIZACIÓN
+    bnb_config = None
+    if usar_4bit:
+        from transformers import BitsAndBytesConfig
+        print("   Configurando para carga en 4-bit...")
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16
+        )
+        load_in_8bit = False
+
+    modelo_original = AutoModelForCausalLM.from_pretrained(
+        ruta_base,
+        torch_dtype=torch.float16,
+        load_in_8bit=load_in_8bit,
+        quantization_config=bnb_config,
+        device_map="auto",
+        trust_remote_code=True,
+        local_files_only=True
+    )
+    print("Modelo base original cargado.")
+
+    print(f"Aplicando adaptadores LoRA desde: {ruta_adaptadores}")
+    modelo_tuneado = PeftModel.from_pretrained(
+        modelo_original,
+        ruta_adaptadores,
+        device_map="auto"
+    )
+    modelo_tuneado.eval() # PONER EN MODO EVALUACIÓN
+    print("Adaptadores LoRA aplicados. Modelo fine-tuneado listo.")
+    return modelo_tuneado
+
 # --- CARGAR MODELO Y TOKENIZER CON TRANSFORMERS ---
 print(f" Cargando Tokenizer y Modelo Llama 3 desde: {ruta_modelo_llama3}")
 try:
@@ -50,17 +89,18 @@ try:
     )
     print("Tokenizer cargado.")
 
-    model = AutoModelForCausalLM.from_pretrained(
+    usar_carga_4_bits_para_agente = False
+
+    model = cargar_modelo_con_lora(
+        ruta_tus_adaptadores_lora,
         ruta_modelo_llama3,
-        torch_dtype=torch.float16,  # MENOR USO DE VRAM
-        load_in_8bit=True,
-        device_map="auto",
-        local_files_only=True
+        usar_4bit=usar_carga_4_bits_para_agente
     )
-    print("Modelo LLM Llama 3 cargado.")
+    print("Modelo LLM Llama 3 FINE-TUNEADO para agente cargado.")
 
 except Exception as e:
-    print(f"Error al cargar Llama 3 desde {ruta_modelo_llama3}: {e}")
+    print(f"Error al cargar Llama 3 FINE-TUNEADO o su tokenizer: {e}")
+    import traceback
     exit()
 
 # --- CONFIGURAR HuggingFaceLLM ---
@@ -68,13 +108,25 @@ try:
     llm = HuggingFaceLLM(
         model=model,
         tokenizer=tokenizer,
-        context_window=8000,
-        max_new_tokens=512,
-        generate_kwargs={"temperature": 0.1, "do_sample": False},
+        generate_kwargs={"temperature": 0.1, "do_sample": (0.1 > 0)},
     )
-    print("HuggingFaceLLM configurado con modelo Llama 3 cargado.")
+    print("HuggingFaceLLM configurado con TU modelo Llama 3 FINE-TUNEADO.")
 except Exception as e:
-    print(f"Error al configurar HuggingFaceLLM con modelo: {e}")
+    print(f"Error al configurar HuggingFaceLLM con TU modelo: {e}")
+    exit()
+
+# --- CONFIGURAR pipeline `llm_clasificador` CON MODELO FINE-TUNEADO ---
+print("Configurando pipeline de clasificación de texto con modelo fine-tuneado...")
+try:
+    llm_clasificador = pipeline(
+        "text-generation",
+        model=model,
+        tokenizer=tokenizer,
+        torch_dtype=torch.float16
+    )
+    print("Pipeline llm_clasificador configurado.")
+except Exception as e:
+    print(f"Error al configurar el pipeline llm_clasificador: {e}")
     exit()
 
 # CONFIGURAR Modelo de Embeddings
@@ -520,6 +572,7 @@ def interpretar_pregunta_llm(prompt: str, llm_clasificador) -> dict:
     Analizador avanzado de intenciones que combina técnicas de NLP básicas con LLM
     para entender mejor la intención del usuario independientemente de la formulación.
     """
+
     prompt_lower = prompt.lower()
 
     # DETECTAR BÚSQUEDA POR COMPONENTES DE NOMBRE
@@ -700,6 +753,8 @@ def desambiguar_consulta(analisis: dict, prompt: str, llm) -> dict:
     Returns:
         dict: El análisis refinado con tipo_busqueda, campo y valor
     """
+    
+    # Si no hay ejemplos relevantes, continuar con la desambiguación normal
     if analisis.get("tipo_busqueda") not in ["desconocido", None]:
         return analisis
     
@@ -2200,7 +2255,6 @@ except Exception as e:
     exit()
 
 print("\n🤖 Agente Inteligente Mejorado: Escribe tu pregunta en lenguaje natural o 'salir' para terminar.")
-print("    Ahora puedes preguntar de cualquier forma y el agente entenderá tu intención.")
 
 while True:
     prompt = input("\nPregunta: ")
@@ -2209,6 +2263,7 @@ while True:
     if not prompt:
         continue
 
+    herramienta_usada = None
     try:
         # PRE-PROCESAMIENTO DE LA CONSULTA
         prompt_procesado = preprocesar_consulta(prompt)
@@ -2235,6 +2290,7 @@ while True:
             print(f"[INFO] Análisis post-desambiguación: tipo={analisis.get('tipo_busqueda')}, campo={analisis.get('campo')}, valor={analisis.get('valor')}")
         
         print(f"[INFO] Ejecutando búsqueda para '{analisis.get('valor')}' como {analisis.get('tipo_busqueda')}...")
+        herramienta_usada = analisis.get('tipo_busqueda', 'desconocido')
         respuesta_final = ejecutar_consulta_inteligente(prompt_procesado, analisis, llm_clasificador)
         
         print(f"\n📄 Resultado:\n{respuesta_final}\n")
@@ -2257,10 +2313,11 @@ while True:
         traceback.print_exc()
 
         try:
-            # FALLBACK
+            # FALLBACK Y REGISTRO DE ERROR
             print("Intentando recuperación con agente fallback...")
             respuesta_agente = agent.query(prompt)
             print(f"\n📄 Resultado (procesado por agente fallback):\n{respuesta_agente}\n")
+            
         except Exception as e2:
             print(f"❌ También falló el agente fallback: {e2}")
             print("Lo siento, no pude procesar tu consulta. Por favor, intenta reformularla.")

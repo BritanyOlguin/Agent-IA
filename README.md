@@ -99,3 +99,12 @@ $env:CMAKE_ARGS = "-DGGML_CUDA=on"
 $env:FORCE_CMAKE = "1"
 pip install llama-cpp-python --no-cache-dir
 ```
+
+3. Implementaciones para fine_tuning
+```sh
+pip install transformers==4.36.2 datasets==2.14.6 peft==0.7.1 accelerate==0.25.0 bitsandbytes==0.41.1 trl==0.7.4 scipy==1.11.4
+pip install datasets
+pip install peft
+pip install trl
+pip install --upgrade accelerate
+```
