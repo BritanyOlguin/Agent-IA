@@ -108,3 +108,28 @@ pip install peft
 pip install trl
 pip install --upgrade accelerate
 ```
+
+## ENTRENAMIENTO DE DATOS
+
+1. Ejecutar el agente_entrenamiento.py para retroalimentar al agente
+
+2. Ejecutar el diagnostico_feedback.py
+
+3. Generar los ejemplos ejecutando el feedback_generar.py
+
+4. Ejecuta generar_datos.py
+
+5. Entrena el modelo con el siguiente comando
+
+```sh
+python .\fine_tuning\scripts\entrenar_modelo.py --epochs 5 --batch_size 2 --lr 2e-4
+```
+
+6. Actualiza la ruta del modelo en Agente.py
+```sh
+ruta_tus_adaptadores_lora = r"C:\Users\TEC-INT02\Documents\Agent-IA\fine_tuning\modelos\llama3-8b-agente-consulta-YYYYMMDD_HHMM"
+```
+7. Prueba la inteligencia de tu nuevo agente
+```sh
+python C:\Users\TEC-INT02\Documents\Agent-IA\Agente.py
+```

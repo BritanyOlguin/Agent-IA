@@ -85,8 +85,8 @@ def crear_nombre_modelo(args):
     return f"llama3-8b-agente-consulta-{timestamp}"
 
 def entrenar_modelo(args):
-    """Función principal para entrenar el modelo"""
-    print("=== ENTRENAMIENTO DE MODELO CON QLORA ===")
+    """Función principal para entrenar el modelo con ejemplos de feedback"""
+    print("=== ENTRENAMIENTO DE MODELO CON QLORA (OPTIMIZADO PARA FEEDBACK) ===")
     
     # Crear carpeta para el modelo
     nombre_modelo = crear_nombre_modelo(args)
@@ -101,6 +101,33 @@ def entrenar_modelo(args):
     ruta_train = os.path.join(CARPETA_DATOS, "train_data.jsonl")
     ruta_val = os.path.join(CARPETA_DATOS, "val_data.jsonl")
     train_dataset, val_dataset = cargar_datos(ruta_train, ruta_val)
+    
+    if train_dataset is None:
+        print("❌ No se pudieron cargar datos de entrenamiento. Verifique la ruta y formato.")
+        return None
+    
+    # Analizar distribución de ejemplos (para depuración)
+    tipos_ejemplos = {}
+    for ejemplo in train_dataset:
+        tipo = ejemplo.get('tipo_plantilla', 'desconocido')
+        tipos_ejemplos[tipo] = tipos_ejemplos.get(tipo, 0) + 1
+    
+    print("\n📊 Distribución de ejemplos de entrenamiento:")
+    for tipo, count in tipos_ejemplos.items():
+        print(f"  - {tipo}: {count} ejemplos ({count/len(train_dataset)*100:.1f}%)")
+    
+    # Ajustar hiperparámetros según la composición del dataset
+    ejemplos_feedback = sum(count for tipo, count in tipos_ejemplos.items() if 'feedback' in tipo)
+    if ejemplos_feedback > 0:
+        print(f"\n🔍 Detectados {ejemplos_feedback} ejemplos de feedback.")
+        print("   Ajustando hiperparámetros para priorizar aprendizaje de feedback...")
+        
+        # Ajustar learning rate y epochs para mejor aprendizaje de ejemplos de feedback
+        if ejemplos_feedback > len(train_dataset) * 0.3:  # Si más del 30% son de feedback
+            args.lr = max(args.lr * 0.8, 1e-5)  # Reducir learning rate
+            args.epochs = max(args.epochs, 5)   # Asegurar suficientes epochs
+            print(f"   - Learning rate ajustado a: {args.lr}")
+            print(f"   - Epochs ajustados a: {args.epochs}")
     
     # Configuración para cuantización a 4-bits
     print(f"Configurando BitsAndBytes para cuantización 4-bit...")
@@ -133,15 +160,15 @@ def entrenar_modelo(args):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
-    # Configurar LoRA
-    print("Configurando LoRA...")
+    # Configurar LoRA con parámetros optimizados para feedback
+    print("Configurando LoRA optimizado para feedback...")
     lora_config = LoraConfig(
-        r=16,                   # Rango de adaptación
-        lora_alpha=32,          # Parámetro de escala
+        r=16,  # Rango de adaptadores (mayor = más capacidad, pero más parámetros)
+        lora_alpha=32,  # Peso de LoRA vs modelo base
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-        lora_dropout=0.05,      # Dropout para regularización
-        bias="none",            # No modificar bias
-        task_type=TaskType.CAUSAL_LM  # Tipo de tarea
+        lora_dropout=0.05,  # Importante para evitar sobreajuste en ejemplos de feedback
+        bias="none",
+        task_type=TaskType.CAUSAL_LM
     )
     
     # Aplicar LoRA al modelo
@@ -150,7 +177,7 @@ def entrenar_modelo(args):
     print("Estructura de parámetros del modelo:")
     model.print_trainable_parameters()
     
-    # Configurar entrenamiento
+    # Configurar entrenamiento con ajustes para feedback
     print("Configurando argumentos de entrenamiento...")
     training_args = TrainingArguments(
         output_dir=ruta_salida,
@@ -167,7 +194,10 @@ def entrenar_modelo(args):
         warmup_ratio=0.05,
         weight_decay=0.01,
         report_to="none",
-        save_total_limit=3  # Guardar solo los 3 mejores checkpoints
+        save_total_limit=3,  # Guardar solo los 3 mejores checkpoints
+        # Evitar sobreajuste con ejemplos de feedback
+        gradient_checkpointing=True,  # Reduce memoria y puede ayudar con sobreajuste
+        max_grad_norm=0.3,            # Clipping de gradientes para estabilidad
     )
     
     # Inicializar trainer
@@ -189,31 +219,54 @@ def entrenar_modelo(args):
     print(f"  - Secuencia máxima: {args.max_seq_length}")
     print(f"  - Salida: {ruta_salida}")
     
-    trainer.train()
-    
-    # Guardar modelo
-    print("\n=== Guardando modelo entrenado ===")
-    trainer.save_model(ruta_salida)
-    tokenizer.save_pretrained(ruta_salida)
-    
-    # Crear un archivo README con información del modelo
-    with open(os.path.join(ruta_salida, "README.md"), "w", encoding="utf-8") as f:
-        f.write(f"# Modelo {nombre_modelo}\n\n")
-        f.write("## Información de entrenamiento\n\n")
-        f.write(f"- Modelo base: Llama-3-8B-Instruct\n")
-        f.write(f"- Fecha de entrenamiento: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
-        f.write(f"- Epochs: {args.epochs}\n")
-        f.write(f"- Learning rate: {args.lr}\n")
-        f.write(f"- Batch size: {args.batch_size}\n")
-        f.write(f"- Ejemplos de entrenamiento: {len(train_dataset)}\n")
-        if val_dataset:
-            f.write(f"- Ejemplos de validación: {len(val_dataset)}\n")
-        f.write("\n## Descripción\n\n")
-        f.write("Este modelo ha sido entrenado específicamente para consultas en bases de datos personales, ")
-        f.write("permitiendo responder preguntas sobre personas, direcciones, teléfonos y otros atributos.\n")
-    
-    print(f"\n✅ Entrenamiento completado con éxito")
-    print(f"  - Modelo guardado en: {ruta_salida}")
+    try:
+        trainer.train()
+        
+        # Guardar modelo
+        print("\n=== Guardando modelo entrenado ===")
+        trainer.save_model(ruta_salida)
+        tokenizer.save_pretrained(ruta_salida)
+        
+        # Crear un archivo README con información del modelo
+        with open(os.path.join(ruta_salida, "README.md"), "w", encoding="utf-8") as f:
+            f.write(f"# Modelo {nombre_modelo}\n\n")
+            f.write("## Información de entrenamiento\n\n")
+            f.write(f"- Modelo base: Llama-3-8B-Instruct\n")
+            f.write(f"- Fecha de entrenamiento: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
+            f.write(f"- Epochs: {args.epochs}\n")
+            f.write(f"- Learning rate: {args.lr}\n")
+            f.write(f"- Batch size: {args.batch_size}\n")
+            f.write(f"- Ejemplos de entrenamiento: {len(train_dataset)}\n")
+            if val_dataset:
+                f.write(f"- Ejemplos de validación: {len(val_dataset)}\n")
+            
+            # Añadir información de feedback
+            if ejemplos_feedback > 0:
+                f.write(f"- Ejemplos de feedback: {ejemplos_feedback//10} (repetidos x10)\n")
+                
+            f.write("\n## Distribución de ejemplos\n\n")
+            for tipo, count in tipos_ejemplos.items():
+                f.write(f"- {tipo}: {count} ({count/len(train_dataset)*100:.1f}%)\n")
+                
+            f.write("\n## Descripción\n\n")
+            f.write("Este modelo ha sido entrenado específicamente para consultas en bases de datos personales, ")
+            f.write("permitiendo responder preguntas sobre personas, direcciones, teléfonos y otros atributos.\n")
+        
+        print(f"\n✅ Entrenamiento completado con éxito")
+        print(f"  - Modelo guardado en: {ruta_salida}")
+        
+    except Exception as e:
+        print(f"\n❌ Error durante el entrenamiento: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        # Intentar guardar el modelo parcial si es posible
+        try:
+            print("\n⚠️ Intentando guardar modelo parcial...")
+            trainer.save_model(os.path.join(ruta_salida, "parcial"))
+            print(f"  - Modelo parcial guardado en: {os.path.join(ruta_salida, 'parcial')}")
+        except:
+            print("  - No se pudo guardar modelo parcial")
     
     return ruta_salida
 

@@ -23,7 +23,7 @@ import re
 ruta_modelo_embeddings = r"C:\Users\TEC-INT02\Documents\Agent-IA\models\models--intfloat--e5-large-v2"
 ruta_indices = r"C:\Users\TEC-INT02\Documents\Agent-IA\llama_index_indices"
 ruta_modelo_llama3 = r"C:\Users\TEC-INT02\Documents\Agent-IA\models\models--meta-llama--Meta-Llama-3-8B-Instruct"
-ruta_tus_adaptadores_lora = r"C:\Users\TEC-INT02\Documents\Agent-IA\fine_tuning\modelos\llama3-8b-agente-consulta-20250515_1007"
+ruta_tus_adaptadores_lora = r"C:\Users\TEC-INT02\Documents\Agent-IA\fine_tuning\modelos\llama3-8b-agente-consulta-20250515_1615"
 
 # --- CONSTANTES PARA BUSCAR_DIRECCION_COMBINADA ---
 CAMPOS_DIRECCION = ['domicilio', 'calle', 'numero', 'colonia', 'sector', 'municipio', 'ciudad', 'estado', 'cp', 'direccion', 'campo14', 'domicilio calle', 'codigo postal', 'edo de origen']
@@ -98,9 +98,62 @@ try:
     )
     print("Modelo LLM Llama 3 FINE-TUNEADO para agente cargado.")
 
+    # VERIFICAR QUE EL MODELO TENGA LORA
+    def verificar_modelo_cargado(modelo):
+        """Verifica que el modelo LoRA se ha cargado correctamente"""
+        modulos_lora = []
+        for nombre, modulo in modelo.named_modules():
+            if 'lora' in nombre.lower() or hasattr(modulo, 'lora_A') or hasattr(modulo, 'lora_B'):
+                modulos_lora.append(nombre)
+        
+        tiene_lora = len(modulos_lora) > 0
+        
+        if tiene_lora:
+            print(f"✅ Modelo LoRA cargado correctamente. Encontrados {len(modulos_lora)} módulos LoRA.")
+            return True
+        else:
+            print("❌ ADVERTENCIA: No se detectaron adaptadores LoRA en el modelo.")
+            return False
+
+    # Verificar el modelo después de cargarlo
+    tiene_adaptadores = verificar_modelo_cargado(model)
+    
+    # FUSIONAR EL MODELO PARA HACERLO COMPATIBLE CON PIPELINE
+    def fusionar_modelo_lora(modelo_peft):
+        """Fusiona los adaptadores LoRA con el modelo base para hacerlo compatible con pipelines"""
+        print("Fusionando adaptadores LoRA con el modelo base...")
+        modelo_fusionado = modelo_peft.merge_and_unload()
+        print("✅ Modelo fusionado correctamente")
+        return modelo_fusionado
+    
+    # Fusionar el modelo si tiene adaptadores
+    if tiene_adaptadores:
+        model_fusionado = fusionar_modelo_lora(model)
+        # Usar el modelo fusionado para el pipeline
+        print("Configurando pipeline de clasificación de texto con modelo fusionado...")
+        llm_clasificador = pipeline(
+            "text-generation",
+            model=model_fusionado,  # Usar el modelo fusionado
+            tokenizer=tokenizer,
+            torch_dtype=torch.float16
+        )
+    else:
+        # Si no tiene adaptadores, usar el modelo directamente
+        model_para_pipeline = model.base_model  # Usar el modelo base si no se detectan adaptadores
+        print("Configurando pipeline de clasificación de texto con modelo base...")
+        llm_clasificador = pipeline(
+            "text-generation",
+            model=model_para_pipeline,
+            tokenizer=tokenizer,
+            torch_dtype=torch.float16
+        )
+    
+    print("Pipeline llm_clasificador configurado.")
+
 except Exception as e:
     print(f"Error al cargar Llama 3 FINE-TUNEADO o su tokenizer: {e}")
     import traceback
+    traceback.print_exc()
     exit()
 
 # --- CONFIGURAR HuggingFaceLLM ---
@@ -567,12 +620,55 @@ def convertir_a_mayusculas(texto: str) -> str:
             
     return '\n'.join(lineas_mayusculas)
 
-def interpretar_pregunta_llm(prompt: str, llm_clasificador) -> dict:
+def interpretar_pregunta_llm(prompt: str, llm_clasificador=None) -> dict:
     """
     Analizador avanzado de intenciones que combina técnicas de NLP básicas con LLM
     para entender mejor la intención del usuario independientemente de la formulación.
     """
+    # Si el pipeline está disponible, úsalo
+    if llm_clasificador is not None:
+        try:
+            prompt_clasificacion = f"""
+            Eres un sistema experto que clasifica consultas para una base de datos de personas. Necesito que clasifiques la siguiente consulta:
+            
+            "{prompt}"
+            
+            Debes determinar:
+            1. El tipo de búsqueda: "nombre", "telefono", "direccion", "atributo" o "nombre_componentes"
+            2. El campo específico (si aplica)
+            3. El valor a buscar
+            
+            Responde con un objeto JSON que contenga exactamente "tipo_busqueda", "campo" y "valor".
+            """
+            
+            salida_cruda = llm_clasificador(prompt_clasificacion, max_new_tokens=256, return_full_text=False)[0]['generated_text']
+            
+            match = re.search(r'\{[\s\S]*?\}', salida_cruda)
+            if match:
+                json_text = match.group(0)
+                resultado = json.loads(json_text)
+                
+                # VERIFICACIÓN Y CORRECCIÓN DE VALORES
+                if resultado.get("valor") is None or resultado.get("valor") == "":
+                    # EXTRACCIÓN FALLBACK BASADA EN TIPO
+                    if resultado.get("tipo_busqueda") == "nombre":
+                        palabras = [p for p in prompt.split() if len(p) > 2 and p[0].isupper()]
+                        if palabras:
+                            resultado["valor"] = " ".join(palabras)
+                        else:
+                            palabras = prompt.split()
+                            resultado["valor"] = " ".join(palabras[-min(3, len(palabras)):])
+                    else:
+                        resultado["valor"] = extraer_valor(prompt)
+                
+                return resultado
+        except Exception as e:
+            print(f"[⚠️ LLM] Error en el análisis LLM vía pipeline: {e}")
+            print("Cambiando a método de respaldo...")
 
+     # Si el pipeline falla o no está disponible, usar análisis de patrones
+    print("[INFO] Usando análisis de patrones básico")
+    
     prompt_lower = prompt.lower()
 
     # DETECTAR BÚSQUEDA POR COMPONENTES DE NOMBRE
