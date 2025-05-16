@@ -9,7 +9,10 @@ __pycache__/
 *.sqlite3
 *.lock
 .locks/
-models/*
+models/base/*
+!models/base/.gitkeep
+models/fine_tuned/*
+!models/fine_tuned/.gitkeep
 data/feedback/*
 !data/feedback/.gitkeep
 data/fine_tuning/*
