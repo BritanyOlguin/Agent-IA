@@ -9,12 +9,7 @@ from llama_index.core import VectorStoreIndex
 from llama_index.core.schema import Document
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.core.settings import Settings
-import unicodedata
-import re
-import sys
-# Importar la función normalizar_texto desde normalizar_texto.py
-sys.path.append(r"C:\Users\TEC-INT02\Documents\Agent-IA\src")
-from normalizar_texto import normalizar_texto
+from src.utils.text_normalizer import normalizar_texto
 
 catalogo_inegi_estados = {
     "01": "Aguascalientes", "02": "Baja California", "03": "Baja California Sur", "04": "Campeche",
@@ -110,9 +105,9 @@ def crear_nombre_completo(row):
     return None
 
 # --- CONFIGURACIÓN GLOBAL ---
-ruta_modelo_embeddings = r"C:\Users\TEC-INT02\Documents\Agent-IA\models\models--intfloat--e5-large-v2"
-carpeta_bd = r"C:\Users\TEC-INT02\Documents\Agent-IA\archivos"
-carpeta_indices = r"C:\Users\TEC-INT02\Documents\Agent-IA\llama_index_indices"
+ruta_modelo_embeddings = r"C:\Users\TEC-INT02\Documents\Agent-IA\models\base\models--intfloat--e5-large-v2"
+carpeta_bd = r"C:\Users\TEC-INT02\Documents\Agent-IA\data\source"
+carpeta_indices = r"C:\Users\TEC-INT02\Documents\Agent-IA\data\indices"
 
 os.makedirs(carpeta_indices, exist_ok=True)
 

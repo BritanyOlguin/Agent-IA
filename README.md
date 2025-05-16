@@ -36,7 +36,7 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 ```
 5. Ejecutar el archivo
 
-venv\src\01_modelDownload.py
+venv\src\utils\model_download.py
 
 Cambiar la ruta si es necesario
 
@@ -79,7 +79,7 @@ pip install transformers sentence-transformers huggingface-hub
 13. Correr este comando, tienes que estar loggeado en hugginface
 ```sh
 huggingface-cli login
-huggingface-cli download intfloat/e5-large-v2 --local-dir "models/models--intfloat--e5-large-v2" --local-dir-use-symlinks False
+huggingface-cli download intfloat/e5-large-v2 --local-dir "models\base\models--intfloat--e5-large-v2" --local-dir-use-symlinks False
 ```
 
 ARCHIVO LLAMA_BD
@@ -113,23 +113,24 @@ pip install --upgrade accelerate
 
 1. Ejecutar el agente_entrenamiento.py para retroalimentar al agente
 
-2. Ejecutar el diagnostico_feedback.py
+2. Ejecutar el analyzer.py
 
-3. Generar los ejemplos ejecutando el feedback_generar.py
+3. Generar los ejemplos ejecutando el collector.py
 
-4. Ejecuta generar_datos.py
+4. Ejecuta data_generator.py
 
 5. Entrena el modelo con el siguiente comando
 
 ```sh
-python .\fine_tuning\scripts\entrenar_modelo.py --epochs 5 --batch_size 2 --lr 2e-4
+python .\src\training\model_trainer.py --epochs 5 --batch_size 2 --lr 2e-4
 ```
 
 6. Actualiza la ruta del modelo en Agente.py
 ```sh
-ruta_tus_adaptadores_lora = r"C:\Users\TEC-INT02\Documents\Agent-IA\fine_tuning\modelos\llama3-8b-agente-consulta-YYYYMMDD_HHMM"
+ruta_tus_adaptadores_lora = r"C:\Users\TEC-INT02\Documents\Agent-IA\models\fine_tuned\llama3-8b-agente-consulta-YYYYMMDD_HHMM"
 ```
 7. Prueba la inteligencia de tu nuevo agente
 ```sh
-python C:\Users\TEC-INT02\Documents\Agent-IA\Agente.py
+python C:\Users\TEC-INT02\Documents\Agent-IA\src\Agente.py
+python -m src.Agente
 ```

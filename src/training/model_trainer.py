@@ -20,9 +20,9 @@ import argparse
 from datetime import datetime
 
 # Configuración de rutas
-CARPETA_DATOS = r"C:\Users\TEC-INT02\Documents\Agent-IA\fine_tuning\datos"
-CARPETA_MODELOS = r"C:\Users\TEC-INT02\Documents\Agent-IA\fine_tuning\modelos"
-MODELO_BASE = r"C:\Users\TEC-INT02\Documents\Agent-IA\models\models--meta-llama--Meta-Llama-3-8B-Instruct"
+CARPETA_DATOS = r"C:\Users\TEC-INT02\Documents\Agent-IA\data\fine_tuning"
+CARPETA_MODELOS = r"C:\Users\TEC-INT02\Documents\Agent-IA\models\fine_tuned"
+MODELO_BASE = r"C:\Users\TEC-INT02\Documents\Agent-IA\models\base\models--meta-llama--Meta-Llama-3-8B-Instruct"
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Script para entrenar un modelo con QLoRA")

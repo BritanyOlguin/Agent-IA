@@ -1,3 +1,7 @@
+"""
+Utilidades para normalización de texto.
+"""
+
 import unicodedata
 import re
 
@@ -72,3 +76,33 @@ def normalizar_texto(texto):
     texto_procesado = ' '.join(texto_procesado.split())
     
     return texto_procesado.strip()
+
+def convertir_a_mayusculas(texto: str) -> str:
+    """
+    Convierte a mayúsculas el texto de los resultados para presentación al usuario.
+    Preserva formato específico como fechas y estructura.
+    
+    Args:
+        texto: El texto a convertir
+        
+    Returns:
+        str: Texto convertido a mayúsculas
+    """
+    if not texto:
+        return ""
+    
+    lineas = texto.split('\n')
+    lineas_mayusculas = []
+    
+    for linea in lineas:
+        if linea.startswith('🔍') or linea.startswith('---') or 'COINCIDENCIAS' in linea:
+            lineas_mayusculas.append(linea)
+            continue
+            
+        if ':' in linea:
+            clave, valor = linea.split(':', 1)
+            lineas_mayusculas.append(f"{clave.strip().upper()}: {valor.strip().upper()}")
+        else:
+            lineas_mayusculas.append(linea.upper())
+            
+    return '\n'.join(lineas_mayusculas)

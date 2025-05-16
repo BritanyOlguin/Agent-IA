@@ -3,24 +3,12 @@ import pandas as pd
 import json
 import random
 from tqdm import tqdm
-import sys
-import re
-
-# Añadir ruta para normalizar_texto si es necesario
-sys.path.append(r"C:\Users\TEC-INT02\Documents\Agent-IA\src")
-try:
-    from normalizar_texto import normalizar_texto
-except ImportError:
-    print("Advertencia: No se pudo importar normalizar_texto. Usando función simplificada.")
-    def normalizar_texto(texto):
-        if not isinstance(texto, str):
-            texto = str(texto)
-        return texto.lower().strip()
+from src.utils.text_normalizer import normalizar_texto
 
 # Configuración de rutas
-CARPETA_BD = r"C:\Users\TEC-INT02\Documents\Agent-IA\archivos"
-CARPETA_SALIDA = r"C:\Users\TEC-INT02\Documents\Agent-IA\fine_tuning\datos"
-CARPETA_FEEDBACK = r"C:\Users\TEC-INT02\Documents\Agent-IA\feedback"
+CARPETA_BD = r"C:\Users\TEC-INT02\Documents\Agent-IA\data\source"
+CARPETA_SALIDA = r"C:\Users\TEC-INT02\Documents\Agent-IA\data\fine_tuning"
+CARPETA_FEEDBACK = r"C:\Users\TEC-INT02\Documents\Agent-IA\data\feedback"
 
 # Formatos para las conversaciones
 FORMATO_INSTRUCCION = """<instrucción>

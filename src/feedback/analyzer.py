@@ -5,9 +5,9 @@ import pandas as pd
 from datetime import datetime
 
 # Configuración de rutas
-RUTA_FEEDBACK = r"C:\Users\TEC-INT02\Documents\Agent-IA\feedback"
+RUTA_FEEDBACK = r"C:\Users\TEC-INT02\Documents\Agent-IA\data\feedback"
 ARCHIVO_FEEDBACK = os.path.join(RUTA_FEEDBACK, "feedback_registro.pkl")
-CARPETA_DATOS = r"C:\Users\TEC-INT02\Documents\Agent-IA\fine_tuning\datos"
+CARPETA_DATOS = r"C:\Users\TEC-INT02\Documents\Agent-IA\data\fine_tuning"
 
 def diagnosticar_feedback():
     """
@@ -161,7 +161,7 @@ if __name__ == "__main__":
         try:
             import sys
             sys.path.append(RUTA_FEEDBACK)
-            from feedback_generar import generar_ejemplos_entrenamiento
+            from collector import generar_ejemplos_entrenamiento
             generar_ejemplos_entrenamiento()
         except Exception as e:
             print(f"❌ Error al generar ejemplos: {e}")
@@ -171,6 +171,6 @@ if __name__ == "__main__":
         # Ejecutar el script de entrenamiento
         try:
             import subprocess
-            subprocess.run(["python", r"C:\Users\TEC-INT02\Documents\Agent-IA\fine_tuning\scripts\entrenar_modelo.py"])
+            subprocess.run(["python", r"C:\Users\TEC-INT02\Documents\Agent-IA\src\training\model_trainer.py"])
         except Exception as e:
             print(f"❌ Error al iniciar entrenamiento: {e}")

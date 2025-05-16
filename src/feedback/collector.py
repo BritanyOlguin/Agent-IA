@@ -1,4 +1,6 @@
-# Mejora del script feedback_generar.py
+"""
+Generador de ejemplos de entrenamiento a partir del feedback, genera el archivo ejemplos_entrenamiento.json (feedback_generar.py)
+"""
 import os
 import pickle
 import json
@@ -6,7 +8,7 @@ import pandas as pd
 from datetime import datetime
 
 # Configuración de rutas
-RUTA_FEEDBACK = r"C:\Users\TEC-INT02\Documents\Agent-IA\feedback"
+RUTA_FEEDBACK = r"C:\Users\TEC-INT02\Documents\Agent-IA\data\feedback"
 ARCHIVO_FEEDBACK = os.path.join(RUTA_FEEDBACK, "feedback_registro.pkl")
 ARCHIVO_EJEMPLOS = os.path.join(RUTA_FEEDBACK, "ejemplos_entrenamiento.json")
 ARCHIVO_CSV = os.path.join(RUTA_FEEDBACK, "ejemplos_entrenamiento.csv")
