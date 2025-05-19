@@ -4,6 +4,7 @@ import json
 import random
 from tqdm import tqdm
 from src.utils.text_normalizer import normalizar_texto
+from datetime import datetime
 
 # Configuración de rutas
 CARPETA_BD = r"C:\Users\TEC-INT02\Documents\Agent-IA\data\source"
@@ -419,7 +420,22 @@ def main():
                 ejemplos_feedback = json.load(f)
                 if ejemplos_feedback:
                     print(f"✓ Cargados {len(ejemplos_feedback)} ejemplos de retroalimentación")
+
+                    fechas = []
+                    for ejemplo in ejemplos_feedback:
+                        if "timestamp" in ejemplo:
+                            try:
+                                fecha = datetime.strptime(ejemplo["timestamp"], "%Y-%m-%d %H:%M:%S")
+                                fechas.append(fecha)
+                            except:
+                                continue
                     
+                    if fechas:
+                        fecha_mas_antigua = min(fechas)
+                        fecha_mas_reciente = max(fechas)
+                        dias_acumulados = (fecha_mas_reciente - fecha_mas_antigua).days
+                        print(f"✓ Ejemplos acumulados abarcan {dias_acumulados} días (desde {fecha_mas_antigua.strftime('%Y-%m-%d')} hasta {fecha_mas_reciente.strftime('%Y-%m-%d')})")
+
                     # Verificar estructura de los ejemplos
                     for idx, ejemplo in enumerate(ejemplos_feedback):
                         if not isinstance(ejemplo, dict) or 'prompt' not in ejemplo:

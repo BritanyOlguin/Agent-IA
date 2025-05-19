@@ -113,11 +113,27 @@ pip install --upgrade accelerate
 
 1. Ejecutar el agente_entrenamiento.py para retroalimentar al agente
 
+```sh
+python -m src.Agente_entrenamiento
+```
+
 2. Ejecutar el analyzer.py
+
+```sh
+python -m src.feedback.analyzer
+```
 
 3. Generar los ejemplos ejecutando el collector.py
 
+```sh
+python -m src.feedback.collector
+```
+
 4. Ejecuta data_generator.py
+
+```sh
+python -m src.training.data_generator
+```
 
 5. Entrena el modelo con el siguiente comando
 

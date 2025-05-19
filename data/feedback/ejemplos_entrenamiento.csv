@@ -1,0 +1,4 @@
+prompt,tipo_busqueda_correcta,campo_correcto,valor_correcto,timestamp
+"Necesito que me digas que personas se hubican en hidalgo, zapopan",direccion,sector y municipio,"hidalgo, zapopan",2025-05-19 09:31:12
+¿A quien le pertenece esta tarjeta 5471560100011115?,atributo,tarjeta,5471560100011115,2025-05-19 10:18:46
+Sabes si hay personas que se dediquen a ser estudiantes?,atributo,ocupacion,estudiante,2025-05-19 10:26:17

@@ -14,7 +14,8 @@ models/base/*
 models/fine_tuned/*
 !models/fine_tuned/.gitkeep
 data/feedback/*
-!data/feedback/.gitkeep
+!data/feedback/ejemplos_entrenamiento.json
+!data/feedback/ejemplos_entrenamiento.csv
 data/fine_tuning/*
 !data/fine_tuning/.gitkeep
 data/indices/*

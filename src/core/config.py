@@ -14,7 +14,7 @@ from src.core.llm import cargar_modelo_con_lora
 ruta_modelo_embeddings = r"C:\Users\TEC-INT02\Documents\Agent-IA\models\base\models--intfloat--e5-large-v2"
 ruta_indices = r"C:\Users\TEC-INT02\Documents\Agent-IA\data\indices"
 ruta_modelo_llama3 = r"C:\Users\TEC-INT02\Documents\Agent-IA\models\base\models--meta-llama--Meta-Llama-3-8B-Instruct"
-ruta_tus_adaptadores_lora = r"C:\Users\TEC-INT02\Documents\Agent-IA\models\fine_tuned\llama3-8b-agente-consulta-20250515_1615"
+ruta_tus_adaptadores_lora = r"C:\Users\TEC-INT02\Documents\Agent-IA\models\fine_tuned\llama3-8b-agente-consulta-20250519_1030"
 
 # --- CONSTANTES PARA BUSCAR_DIRECCION_COMBINADA ---
 CAMPOS_DIRECCION = ['domicilio', 'calle', 'numero', 'colonia', 'sector', 'municipio', 'ciudad', 'estado', 'cp', 'direccion', 'campo14', 'domicilio calle', 'codigo postal', 'edo de origen']

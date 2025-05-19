@@ -1,0 +1,23 @@
+[
+  {
+    "prompt": "Necesito que me digas que personas se hubican en hidalgo, zapopan",
+    "tipo_busqueda_correcta": "direccion",
+    "campo_correcto": "sector y municipio",
+    "valor_correcto": "hidalgo, zapopan",
+    "timestamp": "2025-05-19 09:31:12"
+  },
+  {
+    "prompt": "¿A quien le pertenece esta tarjeta 5471560100011115?",
+    "tipo_busqueda_correcta": "atributo",
+    "campo_correcto": "tarjeta",
+    "valor_correcto": "5471560100011115",
+    "timestamp": "2025-05-19 10:18:46"
+  },
+  {
+    "prompt": "Sabes si hay personas que se dediquen a ser estudiantes?",
+    "tipo_busqueda_correcta": "atributo",
+    "campo_correcto": "ocupacion",
+    "valor_correcto": "estudiante",
+    "timestamp": "2025-05-19 10:26:17"
+  }
+]

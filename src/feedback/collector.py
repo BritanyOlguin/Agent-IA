@@ -51,10 +51,21 @@ def generar_ejemplos_entrenamiento():
                 print("Operación cancelada por el usuario.")
                 return False
         
+        # Cargar ejemplos existentes
+        ejemplos_existentes = []
+        if os.path.exists(ARCHIVO_EJEMPLOS):
+            try:
+                with open(ARCHIVO_EJEMPLOS, 'r', encoding='utf-8') as f:
+                    ejemplos_existentes = json.load(f)
+                print(f"✓ Cargados {len(ejemplos_existentes)} ejemplos existentes")
+            except Exception as e:
+                print(f"⚠️ Error al cargar ejemplos existentes: {e}")
+                print("   Se crearán ejemplos desde cero.")
+                ejemplos_existentes = []
+        
         # Formato para los ejemplos
-        ejemplos = []
+        ejemplos_nuevos = []
         for entrada in entradas_con_sugerencia:
-            # Asegurar que la sugerencia tenga el formato esperado (diccionario)
             sugerencia = entrada.get('sugerencia', {})
             if isinstance(sugerencia, str):
                 print(f"⚠️ Formato de sugerencia incorrecto: {sugerencia}")
@@ -77,19 +88,24 @@ def generar_ejemplos_entrenamiento():
                 print(f"⚠️ Ejemplo incompleto: {ejemplo}")
                 continue
                 
-            ejemplos.append(ejemplo)
+            ejemplos_nuevos.append(ejemplo)
+
+        prompts_existentes = {ej["prompt"] for ej in ejemplos_existentes}
+        ejemplos_a_agregar = [ej for ej in ejemplos_nuevos if ej["prompt"] not in prompts_existentes]
+        
+        todos_ejemplos = ejemplos_existentes + ejemplos_a_agregar
         
         # Guardar ejemplos para entrenamiento
-        if ejemplos:
+        if todos_ejemplos:
             # Guardar en formato JSON
             with open(ARCHIVO_EJEMPLOS, 'w', encoding='utf-8') as f:
-                json.dump(ejemplos, f, ensure_ascii=False, indent=2)
+                json.dump(todos_ejemplos, f, ensure_ascii=False, indent=2)
             
             # Guardar en formato CSV para visualización fácil
-            df = pd.DataFrame(ejemplos)
+            df = pd.DataFrame(todos_ejemplos)
             df.to_csv(ARCHIVO_CSV, index=False, encoding='utf-8')
             
-            print(f"✅ Generados {len(ejemplos)} ejemplos para entrenamiento")
+            print(f"✅ Total ejemplos: {len(todos_ejemplos)} (Anteriores: {len(ejemplos_existentes)}, Nuevos: {len(ejemplos_a_agregar)})")
             print(f"   - JSON: {ARCHIVO_EJEMPLOS}")
             print(f"   - CSV: {ARCHIVO_CSV}")
             
