@@ -235,7 +235,9 @@ def buscar_direccion_combinada(texto_direccion: str) -> str:
         texto_limpio = re.sub(r'\s*\(Score: \d+\.\d+\)', '', res['texto_base']).strip() # LIMPIAR SCORE
         textos_resultados.append(texto_limpio)
 
-    return convertir_a_mayusculas(mensaje_intro + "\n\n".join(textos_resultados))
+    contador_resultados = f"\n\nSE ENCONTRARON {len(textos_resultados)} RESULTADOS."
+
+    return convertir_a_mayusculas(mensaje_intro + "\n\n".join(textos_resultados) + contador_resultados)
 
 buscar_direccion_tool = FunctionTool.from_defaults(
     fn=buscar_direccion_combinada,

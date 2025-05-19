@@ -53,7 +53,10 @@ def buscar_numero_telefono(valor: str) -> str:
         return f"No se encontraron coincidencias relevantes para el número '{valor}'."
 
     resultados_ordenados = sorted(resultados.values(), key=lambda x: -x['score'])
-    return convertir_a_mayusculas("Se encontraron las siguientes coincidencias para número telefónico:\n\n" + "\n\n".join([r['texto'] for r in resultados_ordenados]))
+
+    contador_resultados = f"\n\nSE ENCONTRARON {len(resultados_ordenados)} RESULTADOS."
+
+    return convertir_a_mayusculas("Se encontraron las siguientes coincidencias para número telefónico:\n\n" + "\n\n".join([r['texto'] for r in resultados_ordenados]) + contador_resultados)
 
 buscar_telefono_tool = FunctionTool.from_defaults(
     fn=buscar_numero_telefono,

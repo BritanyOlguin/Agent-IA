@@ -19,5 +19,47 @@
     "campo_correcto": "ocupacion",
     "valor_correcto": "estudiante",
     "timestamp": "2025-05-19 10:26:17"
+  },
+  {
+    "prompt": "¿A quien puedo localizar en lomas de atemajac?",
+    "tipo_busqueda_correcta": "direccion",
+    "campo_correcto": "colonia",
+    "valor_correcto": "LOMAS DE ATEMAJAC",
+    "timestamp": "2025-05-19 11:33:08"
+  },
+  {
+    "prompt": "Quien se ubica en zapopan?",
+    "tipo_busqueda_correcta": "direccion",
+    "campo_correcto": "municipio",
+    "valor_correcto": "zapopan",
+    "timestamp": "2025-05-19 11:36:00"
+  },
+  {
+    "prompt": "Cuantas personas hay del DF?",
+    "tipo_busqueda_correcta": "direccion",
+    "campo_correcto": "estado",
+    "valor_correcto": "DF",
+    "timestamp": "2025-05-19 11:37:54"
+  },
+  {
+    "prompt": "Cuantas personas viven en RAMOS MILLAN",
+    "tipo_busqueda_correcta": "direccion",
+    "campo_correcto": "colonia",
+    "valor_correcto": "RAMOS MILLAN",
+    "timestamp": "2025-05-19 11:41:56"
+  },
+  {
+    "prompt": "A quien le corresponde este numero de telefono 3586127?",
+    "tipo_busqueda_correcta": "telefono",
+    "campo_correcto": "telefono",
+    "valor_correcto": "3586127",
+    "timestamp": "2025-05-19 12:58:17"
+  },
+  {
+    "prompt": "De quien es el telefono 9153586127",
+    "tipo_busqueda_correcta": "telefono",
+    "campo_correcto": "telefono",
+    "valor_correcto": "9153586127",
+    "timestamp": "2025-05-19 12:59:20"
   }
 ]

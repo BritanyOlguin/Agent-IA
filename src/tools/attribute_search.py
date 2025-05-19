@@ -172,8 +172,10 @@ def buscar_atributo(campo: str, valor: str, carpeta_indices: str) -> str:
         
         if total_registros > num_mostrados:
             mensaje_intro += f" Mostrando {num_mostrados} primeros resultados:"
+
+        contador_resultados = f"\n\nSE ENCONTRARON {total_registros} RESULTADOS."
         
-        return convertir_a_mayusculas(mensaje_intro + "\n\n" + "\n\n".join(resultados[:num_mostrados]))
+        return convertir_a_mayusculas(mensaje_intro + "\n\n" + "\n\n".join(resultados[:num_mostrados]) + contador_resultados)
     else:
         if campo:
             return convertir_a_mayusculas(f"No se encontraron coincidencias para '{campo}: {valor}'.")

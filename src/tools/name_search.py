@@ -261,10 +261,16 @@ def buscar_nombre(query: str) -> str:
 
     if not todas_respuestas:
         return f"No se encontraron coincidencias para '{query}' en ninguna fuente."
-
-    return convertir_a_mayusculas("\n\n".join(todas_respuestas))
-
     
+    total_resultados = 0
+    for categoria in resultados_por_categoria:
+        total_resultados += len(resultados_por_categoria[categoria])
+    
+    contador_resultados = f"\n\nSE ENCONTRARON {total_resultados} RESULTADOS."
+
+    return convertir_a_mayusculas("\n\n".join(todas_respuestas) + contador_resultados)
+
+
 busqueda_global_tool = FunctionTool.from_defaults(
     fn=buscar_nombre,
     name="buscar_nombre",
@@ -399,9 +405,11 @@ def buscar_nombre_componentes(query: str) -> str:
         todas_respuestas.append("\n🔍 COINCIDENCIAS PARCIALES:")
         for res in resultados_ordenados:
             todas_respuestas.append(res["texto"])
-    
-    return convertir_a_mayusculas("\n\n".join(todas_respuestas))
-    
+
+    contador_resultados = f"\n\nSE ENCONTRARON {total_coincidencias} RESULTADOS."
+
+    return convertir_a_mayusculas("\n\n".join(todas_respuestas) + contador_resultados)
+
 buscar_nombre_componentes_tool = FunctionTool.from_defaults(
     fn=buscar_nombre_componentes,
     name="buscar_nombre_componentes",
