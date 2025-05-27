@@ -1,97 +1,286 @@
-import torch
-import gc
-from llama_index.core.agent import ReActAgent
-import json
-import re
-from src.core.engine import indices, all_tools, llm_clasificador, interpretar_pregunta_llm, desambiguar_consulta
-from src.tools.interpret import preprocesar_consulta, obtener_prompt_clasificacion_con_ejemplos, ejecutar_consulta_inteligente
-from src.core.config import device, embed_model, llm
+"""
+Agente con sistema de paginación interactiva para navegar grandes volúmenes de resultados.
+Permite ver resultados de 100 en 100 con navegación siguiente/anterior.
+"""
 
-# --- 8) CREAR Y EJECUTAR EL AGENTE ---
+import sys
+from pathlib import Path
+import math
 
-# CREAR EL AGENTE REACT
-try:
-    agent = ReActAgent.from_tools(
-        tools=all_tools,
-        llm=llm,
-        verbose=False
-    )
-    print("Agente creado correctamente.")
-except Exception as e:
-    print(f"Error al crear el agente: {e}")
-    exit()
+# Agregar el directorio raíz al path
+sys.path.append(str(Path(__file__).parent))
 
-print("\n🤖 Agente Inteligente Mejorado: Escribe tu pregunta en lenguaje natural o 'salir' para terminar.")
+from src.core.elasticsearch_engine import ElasticsearchEngine
 
-while True:
-    prompt = input("\nPregunta: ")
-    if prompt.lower() == 'salir':
-        break
-    if not prompt:
-        continue
-
-    herramienta_usada = None
-    try:
-        # PRE-PROCESAMIENTO DE LA CONSULTA
-        prompt_procesado = preprocesar_consulta(prompt)
-        if prompt_procesado != prompt:
-            print(f"[DEBUG] Consulta procesada: {prompt_procesado}")
+class AgentePaginacion:
+    """Agente con sistema de paginación para grandes volúmenes de datos"""
+    
+    def __init__(self):
+        self.engine = None
+        self.total_docs = 0
+        self.resultados_por_pagina = 100
         
-        prompt_clasificacion = obtener_prompt_clasificacion_con_ejemplos(prompt_procesado)
+        # Estado de navegación
+        self.ultima_consulta = ""
+        self.pagina_actual = 1
+        self.total_resultados = 0
+        self.total_paginas = 0
+        self.todos_resultados = []  # Cache de todos los resultados
         
-        salida_cruda = llm_clasificador(prompt_clasificacion, max_new_tokens=256, return_full_text=False)[0]['generated_text']
-        
-        match = re.search(r'\{[\s\S]*?\}', salida_cruda)
-        if match:
-            json_text = match.group(0)
-            analisis = json.loads(json_text)
-        else:
-            print("[INFO] No se pudo extraer JSON del clasificador, usando analizador alternativo...")
-            analisis = interpretar_pregunta_llm(prompt_procesado, llm_clasificador)
-        
-        print(f"[INFO] Análisis: tipo={analisis.get('tipo_busqueda')}, campo={analisis.get('campo')}, valor={analisis.get('valor')}")
-        
-        if analisis.get("tipo_busqueda") in ["desconocido", None] or not analisis.get("valor"):
-            print("[INFO] Consulta ambigua, intentando desambiguar...")
-            analisis = desambiguar_consulta(analisis, prompt_procesado, llm_clasificador)
-            print(f"[INFO] Análisis post-desambiguación: tipo={analisis.get('tipo_busqueda')}, campo={analisis.get('campo')}, valor={analisis.get('valor')}")
-        
-        print(f"[INFO] Ejecutando búsqueda para '{analisis.get('valor')}' como {analisis.get('tipo_busqueda')}...")
-        herramienta_usada = analisis.get('tipo_busqueda', 'desconocido')
-        respuesta_final = ejecutar_consulta_inteligente(prompt_procesado, analisis, llm_clasificador)
-        
-        print(f"\n📄 Resultado:\n{respuesta_final}\n")
-        
-        if "No se encontraron coincidencias" in respuesta_final:
-            print("\n[SUGERENCIA] Para mejorar los resultados, intenta:")
-            if analisis.get("tipo_busqueda") == "nombre":
-                print("- Usar nombre y apellido completos")
-                print("- Verificar la ortografía del nombre")
-            elif analisis.get("tipo_busqueda") == "direccion":
-                print("- Incluir el número de la dirección")
-                print("- Especificar la colonia o sector")
-            elif analisis.get("tipo_busqueda") == "telefono":
-                print("- Verificar que el número tenga el formato correcto")
-                print("- Incluir el código de área o lada")
-
-    except Exception as e:
-        print(f"❌ Error durante la ejecución: {e}")
-        import traceback
-        traceback.print_exc()
-
         try:
-            # FALLBACK Y REGISTRO DE ERROR
-            print("Intentando recuperación con agente fallback...")
-            respuesta_agente = agent.query(prompt)
-            print(f"\n📄 Resultado (procesado por agente fallback):\n{respuesta_agente}\n")
+            print("🔄 Inicializando Elasticsearch...")
+            self.engine = ElasticsearchEngine()
             
-        except Exception as e2:
-            print(f"❌ También falló el agente fallback: {e2}")
-            print("Lo siento, no pude procesar tu consulta. Por favor, intenta reformularla.")
+            # Verificar datos
+            stats = self.engine.get_stats()
+            self.total_docs = stats.get('total_documents', 0)
+            
+            if self.total_docs == 0:
+                print("⚠️ No hay datos indexados. Ejecuta: python src/utils/elasticsearch_indexer.py")
+            else:
+                print(f"✅ Conectado a Elasticsearch con {self.total_docs:,} registros")
+                
+        except Exception as e:
+            print(f"❌ Error conectando a Elasticsearch: {e}")
+    
+    def buscar_nueva_consulta(self, consulta: str) -> bool:
+        """Realiza una nueva búsqueda y prepara la paginación"""
+        if not self.engine:
+            print("❌ Elasticsearch no está disponible")
+            return False
+        
+        try:
+            print(f"🔍 Buscando: '{consulta}'")
+            print("⏳ Obteniendo todos los resultados... (esto puede tomar unos segundos)")
+            
+            # Obtener TODOS los resultados de una vez (Elasticsearch maneja esto eficientemente)
+            resultados = self.engine.search(consulta, max_results=10000)  # Máximo práctico
+            
+            if resultados['total'] == 0:
+                print(f"❌ No se encontraron resultados para: '{consulta}'")
+                return False
+            
+            # Guardar estado
+            self.ultima_consulta = consulta
+            self.todos_resultados = resultados['results']
+            self.total_resultados = len(self.todos_resultados)
+            self.total_paginas = math.ceil(self.total_resultados / self.resultados_por_pagina)
+            self.pagina_actual = 1
+            
+            print(f"✅ Búsqueda completada en {resultados['took']}ms")
+            print(f"📊 Total encontrados: {self.total_resultados:,} resultados")
+            print(f"📄 Se mostrarán en {self.total_paginas} páginas de {self.resultados_por_pagina} resultados cada una")
+            
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error en búsqueda: {str(e)}")
+            return False
+    
+    def mostrar_pagina_actual(self):
+        """Muestra la página actual de resultados"""
+        if not self.todos_resultados:
+            print("❌ No hay resultados para mostrar")
+            return
+        
+        # Calcular índices de la página actual
+        inicio = (self.pagina_actual - 1) * self.resultados_por_pagina
+        fin = min(inicio + self.resultados_por_pagina, self.total_resultados)
+        
+        resultados_pagina = self.todos_resultados[inicio:fin]
+        
+        # Mostrar header de la página
+        print("\n" + "="*80)
+        print(f"📄 PÁGINA {self.pagina_actual} DE {self.total_paginas}")
+        print(f"🔍 Consulta: '{self.ultima_consulta}'")
+        print(f"📊 Mostrando resultados {inicio + 1:,} al {fin:,} de {self.total_resultados:,} totales")
+        print("="*80)
+        
+        # Mostrar resultados de esta página
+        for i, resultado in enumerate(resultados_pagina, start=inicio + 1):
+            print(f"\n📋 RESULTADO #{i:,} (Relevancia: {resultado['score']:.2f})")
+            print(f"📁 Fuente: {resultado['fuente']}")
+            
+            # Mostrar datos del registro
+            for campo, valor in resultado['data'].items():
+                if campo not in ['fuente', 'fecha_indexado', 'id_original']:
+                    campo_mostrar = campo.replace('_', ' ').title()
+                    print(f"   {campo_mostrar}: {valor}")
+        
+        # Mostrar footer con navegación
+        print("\n" + "="*80)
+        print(f"📄 PÁGINA {self.pagina_actual} DE {self.total_paginas} | Resultados {inicio + 1:,}-{fin:,} de {self.total_resultados:,}")
+        
+        # Mostrar opciones de navegación
+        opciones = []
+        if self.pagina_actual > 1:
+            opciones.append("'anterior' (página anterior)")
+        if self.pagina_actual < self.total_paginas:
+            opciones.append("'siguiente' (página siguiente)")
+        opciones.extend([
+            "'pagina X' (ir a página específica)",
+            "'pregunta' (nueva búsqueda)",
+            "'salir' (terminar)"
+        ])
+        
+        print("🧭 NAVEGACIÓN:")
+        for opcion in opciones:
+            print(f"   • {opcion}")
+        print("="*80)
+    
+    def navegar_anterior(self) -> bool:
+        """Va a la página anterior"""
+        if self.pagina_actual > 1:
+            self.pagina_actual -= 1
+            print(f"⬅️ Navegando a página {self.pagina_actual}")
+            return True
+        else:
+            print("❌ Ya estás en la primera página")
+            return False
+    
+    def navegar_siguiente(self) -> bool:
+        """Va a la página siguiente"""
+        if self.pagina_actual < self.total_paginas:
+            self.pagina_actual += 1
+            print(f"➡️ Navegando a página {self.pagina_actual}")
+            return True
+        else:
+            print("❌ Ya estás en la última página")
+            return False
+    
+    def ir_a_pagina(self, numero_pagina: int) -> bool:
+        """Va a una página específica"""
+        if 1 <= numero_pagina <= self.total_paginas:
+            self.pagina_actual = numero_pagina
+            print(f"🎯 Navegando a página {self.pagina_actual}")
+            return True
+        else:
+            print(f"❌ Página inválida. Debe estar entre 1 y {self.total_paginas}")
+            return False
+    
+    def mostrar_ayuda(self):
+        """Muestra ejemplos de consultas"""
+        ejemplos = [
+            "Adrian Lino",
+            "Malva 101", 
+            "telefono 6934463",
+            "Aguascalientes",
+            "ama de casa",
+            "Alma Garcia",
+            "CDMX",
+            "Guadalupe",
+            "zapopan",
+            "sector juarez"
+        ]
+        
+        print("\n💡 EJEMPLOS DE CONSULTAS:")
+        for ejemplo in ejemplos:
+            print(f"   🔍 {ejemplo}")
+        
+        print("\n✨ CARACTERÍSTICAS:")
+        print("   ✅ Tolerancia a errores ortográficos")
+        print("   ✅ Búsqueda parcial (ej: 'Adrian' encuentra 'Adrian Lino')")
+        print("   ✅ Búsqueda por cualquier campo")
+        print("   ✅ Navegación por páginas de 100 resultados")
+        print("   ✅ Velocidad extrema (milisegundos)")
+    
+    def mostrar_estadisticas(self):
+        """Muestra estadísticas del sistema y búsqueda actual"""
+        if self.engine:
+            stats = self.engine.get_stats()
+            print(f"\n📊 ESTADÍSTICAS DEL SISTEMA:")
+            print(f"   📄 Total documentos en base: {stats.get('total_documents', 0):,}")
+            print(f"   💾 Tamaño del índice: {stats.get('index_size', 0) / 1024 / 1024:.2f} MB")
+            print(f"   ⚡ Estado: {stats.get('status', 'desconocido')}")
+            
+            if self.ultima_consulta:
+                print(f"\n🔍 ESTADÍSTICAS DE BÚSQUEDA ACTUAL:")
+                print(f"   🎯 Consulta: '{self.ultima_consulta}'")
+                print(f"   📊 Resultados encontrados: {self.total_resultados:,}")
+                print(f"   📄 Total de páginas: {self.total_paginas}")
+                print(f"   📍 Página actual: {self.pagina_actual}")
+                print(f"   📋 Resultados por página: {self.resultados_por_pagina}")
 
-# --- LIMPIEZA ---
-del llm, embed_model, agent, all_tools, indices
-if device == "cuda":
-    torch.cuda.empty_cache()
-gc.collect()
-print("\n👋 ¡Hasta luego!")
+def main():
+    """Función principal"""
+    print("="*80)
+    print("🚀 AGENTE DE BÚSQUEDA CON PAGINACIÓN INTERACTIVA")
+    print("="*80)
+    
+    # Crear agente
+    agente = AgentePaginacion()
+    
+    if not agente.engine:
+        print("❌ No se pudo inicializar Elasticsearch")
+        return
+    
+    print(f"📊 Base de datos: {agente.total_docs:,} registros disponibles")
+    print(f"📄 Resultados por página: {agente.resultados_por_pagina}")
+    
+    # Mostrar ayuda inicial
+    agente.mostrar_ayuda()
+    
+    print("\n" + "-"*80)
+    print("💬 COMANDOS DISPONIBLES:")
+    print("   🔍 [consulta] - Nueva búsqueda")
+    print("   ➡️ siguiente - Página siguiente")
+    print("   ⬅️ anterior - Página anterior") 
+    print("   🎯 pagina [número] - Ir a página específica")
+    print("   💡 ayuda - Mostrar ejemplos")
+    print("   📊 estadisticas - Ver estadísticas")
+    print("   🚪 salir - Terminar programa")
+    print("-"*80)
+    
+    while True:
+        try:
+            comando = input("\n🎮 Comando: ").strip().lower()
+            
+            if not comando:
+                continue
+            
+            # Comandos de salida
+            if comando in ['salir', 'exit', 'quit']:
+                print("\n👋 ¡Hasta luego!")
+                break
+            
+            # Comandos de ayuda
+            elif comando in ['ayuda', 'help']:
+                agente.mostrar_ayuda()
+            
+            # Estadísticas
+            elif comando in ['estadisticas', 'stats']:
+                agente.mostrar_estadisticas()
+            
+            # Navegación - siguiente
+            elif comando in ['siguiente', 'next', 'sig']:
+                if agente.navegar_siguiente():
+                    agente.mostrar_pagina_actual()
+                    
+            # Navegación - anterior
+            elif comando in ['anterior', 'prev', 'ant']:
+                if agente.navegar_anterior():
+                    agente.mostrar_pagina_actual()
+            
+            # Ir a página específica
+            elif comando.startswith('pagina '):
+                try:
+                    numero = int(comando.split('pagina ')[1])
+                    if agente.ir_a_pagina(numero):
+                        agente.mostrar_pagina_actual()
+                except (ValueError, IndexError):
+                    print("❌ Formato incorrecto. Usa: pagina [número]")
+            
+            # Nueva búsqueda
+            else:
+                # Tratar como nueva consulta
+                if agente.buscar_nueva_consulta(comando):
+                    agente.mostrar_pagina_actual()
+            
+        except KeyboardInterrupt:
+            print("\n\n👋 Saliendo...")
+            break
+        except Exception as e:
+            print(f"\n❌ Error: {e}")
+
+if __name__ == "__main__":
+    main()

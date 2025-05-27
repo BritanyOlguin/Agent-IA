@@ -55,11 +55,6 @@ pip install sentence-transformers
 
 9. Cambiar rutas
 
-<!-- 10. Instalar FAISS -->
-<!-- ```sh
-pip install faiss-cpu sentence-transformers pandas
-``` -->
-
 11. Instalar LlamaIndex
 ```sh
 pip install llama-index sentence-transformers transformers pandas openpyxl
@@ -107,6 +102,70 @@ pip install datasets
 pip install peft
 pip install trl
 pip install --upgrade accelerate
+```
+
+## Instalar Elasticsearch
+1. Correr comandos en terminal
+```sh
+pip install elasticsearch
+pip install elasticsearch-dsl
+pip install unidecode
+```
+
+2. Descargar e Instalar Elasticsearch
+* Ve a: https://www.elastic.co/downloads/elasticsearch
+* Descarga la versión para Windows (ZIP)
+* Extrae en una carpeta como C:\elasticsearch-8.x.x
+* Ejecuta: C:\elasticsearch-8.x.x\bin\elasticsearch.bat
+* Verifica abriendo https://localhost:9200 en tu navegador
+
+¡IMPORTANTE GUARDAR CONTRASEÑA Y MANTENER ABIERTO LA PANTALLA BASH!
+
+## Deshabilitar Seguridad en Elasticsearch
+1. Buscar el archivo de configuración:
+config\elasticsearch.yml
+2. Abrir el archivo elasticsearch.yml con un editor de texto, agregar estas líneas al final del archivo
+```sh
+# ======================== Elasticsearch Configuration =========================
+# Configuración simple para desarrollo - SIN seguridad
+
+# Cluster
+cluster.name: agente-ia-cluster
+node.name: node-1
+
+# Network
+network.host: localhost
+http.host: 0.0.0.0
+http.port: 9200
+
+# Discovery
+discovery.type: single-node
+
+# Security - DESHABILITADA para desarrollo
+xpack.security.enabled: false
+xpack.security.enrollment.enabled: false
+xpack.security.http.ssl.enabled: false
+xpack.security.transport.ssl.enabled: false
+
+# Logging
+cluster.routing.allocation.disk.threshold_enabled: false
+```
+3. Guardar el archivo
+
+## Iniciar proyecto
+1. Correr testeo de conexion con elastics
+```sh
+python elasticsearch_test.py
+```
+
+2. Correr indexado de datos
+```sh
+python src/utils/elasticsearch_indexer.py
+```
+
+3. Correr el agente
+```sh
+python -m src.Agente
 ```
 
 ## ENTRENAMIENTO DE DATOS
