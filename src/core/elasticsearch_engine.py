@@ -7,11 +7,13 @@ import os
 import pandas as pd
 from elasticsearch import Elasticsearch
 from elasticsearch.exceptions import ConnectionError, NotFoundError
-from typing import Dict, List, Any, Optional
-import json
+from typing import Dict, List, Any, Optional, Tuple
 import re
 from datetime import datetime
 from unidecode import unidecode
+import spacy
+from sentence_transformers import SentenceTransformer
+import numpy as np
 
 class ElasticsearchEngine:
     """
@@ -44,6 +46,104 @@ class ElasticsearchEngine:
         
         # Configurar índice si no existe
         self._setup_index()
+
+                # Inicializar modelos de NLP
+        print("🧠 Cargando modelos de inteligencia artificial...")
+        try:
+            self.nlp = spacy.load("es_core_news_sm")
+            print("✅ Modelo de español cargado")
+        except OSError:
+            print("⚠️ Modelo de español no encontrado, usando análisis básico")
+            self.nlp = None
+        
+        # Inicializar modelo de embeddings semánticos
+        try:
+            self.semantic_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+            print("✅ Modelo semántico cargado")
+        except:
+            print("⚠️ Modelo semántico no disponible")
+            self.semantic_model = None
+        
+        # Diccionario de intenciones semánticas
+        self.intention_patterns = {
+            'buscar_propietario': [
+                'de quien es', 'a quien pertenece', 'quien tiene', 'propietario de',
+                'dueño de', 'titular de', 'quien es el dueño', 'a nombre de quien está',
+                'quién posee', 'cuál es el poseedor de', 'saber el propietario',
+                'identificar al dueño', 'quién lo registra', 'a quién le pertenece'
+            ],
+            'buscar_informacion': [
+                'que datos', 'informacion de', 'dime sobre', 'busca a',
+                'encuentra a', 'datos de', 'info de', 'dame los detalles de',
+                'necesito saber de', 'obtén datos de', 'averigua sobre',
+                'información acerca de', 'muéstrame de', 'qué sabes de',
+                'reporte de', 'detalles de', 'quiero conocer de', 'qué información hay sobre'
+            ],
+            'verificar_existencia': [
+                'existe', 'esta registrado', 'hay alguien', 'se encuentra',
+                'está activo', 'es válido', 'está vigente', 'es real',
+                'se puede encontrar', 'lo tienes en tu base', 'está en la base de datos',
+                'ha sido dado de alta', 'existe registro de', 'confirmar si existe'
+            ],
+            'obtener_contacto': [
+                'contacto de', 'cómo contacto a', 'número para', 'dirección de',
+                'teléfono de', 'email de', 'comunicarme con', 'donde lo localizo'
+            ],
+            'solicitar_ubicacion': [
+                'donde esta', 'ubicación de', 'dirección de', 'vive en', 'localidad de',
+                'domicilio de', 'sitio de', 'en qué calle', 'en qué ciudad', 'en qué estado'
+            ],
+            'realizar_consulta_general': [
+                'sobre', 'acerca de', 'qué hay de', 'información general de',
+                'todo sobre', 'preguntas sobre'
+            ]
+        }
+        
+        # Diccionario de tipos de datos semánticos
+        self.data_type_patterns = {
+            'tarjeta': [
+                'tarjeta', 'plastico', 'credito', 'debito', 'card', 'visa',
+                'mastercard', 'bancaria', 'cuenta', 'saldo', 'financiera',
+                'amex', 'diners', 'paypal', 'nip', 'cvv', 'expiracion',
+                'vencimiento', 'numero de tarjeta', 'cuenta bancaria', 'caja de ahorro',
+                'cheques', 'revolvente', 'departamental', 'puntos'
+            ],
+            'telefono': [
+                'telefono', 'celular', 'movil', 'numero', 'tel', 'cell',
+                'whatsapp', 'contacto', 'llamada', 'fijo', 'lada', 'linea',
+                'telefonico', 'movistar', 'telcel', 'att', 'unefon', 'comunicacion',
+                'telf', 'extension', 'ph', 'phone', 'telefónico'
+            ],
+            'documento': [
+                'ife', 'credencial', 'electoral', 'identificacion', 'cedula',
+                'documento', 'id', 'clave', 'pasaporte', 'licencia', 'curp',
+                'rfc', 'nss', 'folio', 'identidad', 'oficial', 'dni', 'cédula de identidad',
+                'licencia de conducir', 'identificación oficial', 'acta de nacimiento',
+                'comprobante de domicilio', 'firma electrónica'
+            ],
+            'nombre_persona': [
+                'nombre', 'persona', 'individuo', 'sujeto', 'ciudadano', 'hombre', 'mujer',
+                'nombre completo', 'nombre y apellido', 'nombres', 'apellidos'
+            ],
+            'direccion_fisica': [
+                'direccion', 'domicilio', 'calle', 'avenida', 'boulevard', 'colonia',
+                'barrio', 'vecindario', 'codigo postal', 'cp', 'ciudad', 'municipio',
+                'estado', 'pais', 'residencia', 'ubicacion', 'localidad', 'postal',
+                'apartamento', 'num exterior', 'num interior', 'código postal', 'c.p.'
+            ],
+            'ocupacion_profesion': [
+                'ocupacion', 'profesion', 'trabajo', 'empleo', 'profesional', 'puesto',
+                'a que se dedica', 'oficio'
+            ],
+            'edad_genero': [
+                'edad', 'años', 'genero', 'sexo', 'años de edad', 'fecha de nacimiento',
+                'hombre', 'mujer', 'masculino', 'femenino'
+            ],
+            'producto_servicio': [
+                'producto', 'servicio', 'articulo', 'bien', 'mercancia', 'suscripcion',
+                'plan', 'paquete', 'modelo', 'tipo de producto', 'qué producto', 'qué servicio'
+            ]
+        }
     
     def _verify_connection(self):
         """Verifica que Elasticsearch esté ejecutándose"""
@@ -187,6 +287,120 @@ class ElasticsearchEngine:
             print(f"✅ Índice '{self.index_name}' creado con configuración optimizada")
         else:
             print(f"✅ Índice '{self.index_name}' ya existe")
+
+    def _analyze_query_semantically(self, query: str) -> Tuple[str, str, str, float]:
+        """
+        Analiza la consulta usando NLP para entender intención y tipo de datos
+        
+        Returns:
+            Tuple[intention, data_type, clean_value, confidence]
+        """
+        query_lower = query.lower().strip()
+
+        # Detectar intención del usuario
+        intention = 'buscar_informacion'  # default
+        intention_confidence = 0.5
+
+        for intent, patterns in self.intention_patterns.items():
+            for pattern in patterns:
+                if pattern in query_lower:
+                    intention = intent
+                    intention_confidence = 0.9
+                    break
+            if intention_confidence > 0.8: # Solo se detiene si la confianza es alta
+                break
+
+        # Detectar tipo de datos semánticamente (inicial)
+        data_type = 'general'
+        data_confidence = 0.5
+
+        for dtype, patterns in self.data_type_patterns.items():
+            for pattern in patterns:
+                if pattern in query_lower:
+                    data_type = dtype
+                    data_confidence = 0.9
+                    break
+            if data_confidence > 0.8: # Solo se detiene si la confianza es alta
+                break
+        
+        clean_value = query_lower
+        
+        # Regex para CLAVE IFE (18 caracteres alfanuméricos)
+        clave_ife_match = re.search(r'\b[A-Z0-9]{18}\b', query)
+        if clave_ife_match:
+            clean_value = clave_ife_match.group(0)
+            data_type = 'documento' # Sobrescribe si el patrón es claro
+            data_confidence = 0.98
+
+        # Regex para números de tarjeta (16 dígitos)
+        elif re.search(r'\b\d{16}\b', query):
+            clean_value = re.search(r'\b\d{16}\b', query).group(0)
+            data_type = 'tarjeta'
+            data_confidence = 0.99 # Muy alta confianza para 16 dígitos
+
+        # Regex para teléfonos (10 dígitos para México, u 11 si incluye prefijo internacional +1)
+        elif re.search(r'\b\d{10,11}\b', query):
+            clean_value = re.search(r'\b\d{10,11}\b', query).group(0)
+            data_type = 'telefono'
+            data_confidence = 0.95
+
+        # Regex para códigos postales (5 dígitos)
+        elif re.search(r'\b\d{5}\b', query):
+            clean_value = re.search(r'\b\d{5}\b', query).group(0)
+            data_type = 'direccion_fisica' # Un CP es parte de una dirección
+            data_confidence = 0.95
+
+        # Si tenemos spaCy, hacer análisis más profundo y refinar data_type/clean_value
+        if self.nlp:
+            try:
+                doc = self.nlp(query)
+
+                # Buscar entidades nombradas y priorizarlas para clean_value y data_type
+                # Solo si clean_value aún no ha sido establecido por una regex de alta confianza
+                if data_confidence < 0.9: # Evita sobrescribir detecciones muy seguras (tarjeta, IFE)
+                    for ent in doc.ents:
+                        if ent.label_ in ['PER', 'PERSON']:
+                            clean_value = ent.text
+                            data_type = 'nombre_persona'
+                            data_confidence = max(data_confidence, 0.9)
+                            break
+                        elif ent.label_ in ['LOC', 'GPE', 'FAC', 'ORG']: # Incluye más tipos de lugar/organización
+                            clean_value = ent.text
+                            data_type = 'direccion_fisica'
+                            data_confidence = max(data_confidence, 0.85)
+                            break
+
+                # Si data_type sigue siendo 'general' o clean_value no es específico, intentar extraer sustantivos importantes
+                if data_type == 'general' or clean_value == query_lower:
+                    important_tokens = [token.text for token in doc
+                                        if token.pos_ in ['NOUN', 'PROPN']
+                                        and len(token.text) > 2
+                                        and not token.is_stop]
+                    if important_tokens:
+                        # Aquí, puedes intentar inferir el tipo de dato basándote en los sustantivos
+                        # Esto es más heurístico y menos preciso, pero puede ayudar
+                        matched_dtype_from_tokens = False
+                        for token in important_tokens:
+                            for dtype, patterns in self.data_type_patterns.items():
+                                if token in patterns: # Si un sustantivo importante es un patrón de tipo de dato
+                                    data_type = dtype
+                                    data_confidence = max(data_confidence, 0.7) # Menor confianza
+                                    matched_dtype_from_tokens = True
+                                    break
+                            if matched_dtype_from_tokens:
+                                break
+                        
+                        if data_type == 'general': # Si aún no se ha asignado un tipo de dato claro
+                             clean_value = ' '.join(important_tokens) # Si no hay un tipo de dato claro, usa los sustantivos como valor
+                
+
+            except Exception as e:
+                # print(f"Error con spaCy: {e}") # Descomentar para depuración si es necesario
+                pass  # Si spaCy falla, usar análisis básico
+        
+        overall_confidence = (intention_confidence + data_confidence) / 2
+        
+        return intention, data_type, clean_value, overall_confidence
     
     def index_data_from_files(self, data_folder: str):
         """
@@ -339,34 +553,84 @@ class ElasticsearchEngine:
         column_mapping = {
             'nombre_completo': [
                 'nombre_completo', 'nombre completo', 'nombre y apellidos', 'nombre_y_apellidos',
-                'NOMBRE_COMPLETO', 'NOMBRE COMPLETO', 'nombre', 'NOMBRE', 'Name', 'NAME'
+                'NOMBRE_COMPLETO', 'NOMBRE COMPLETO', 'nombre', 'NOMBRE', 'Name', 'NAME',
+                'PATERNO', 'paterno', 'MATERNO', 'materno', 'Nombre Completo',
+                'primer nombre', 'segundo nombre', 'apellido paterno', 'apellido materno',
+                'first name', 'last name', 'surname', 'given name', 'full name',
+                'razon social', 'razón social', 'company name', 'business name',
+                'titular', 'beneficiario'
             ],
             'telefono_completo': [
-                'telefono', 'teléfono', 'tel', 'celular', 'telefono_completo', 'TELEFONO',
-                'TELÉFONO', 'TEL', 'CELULAR', 'phone', 'PHONE', 'numero_telefono'
+                'telefono', 'teléfono', 'tel', 'celular', 'telefono_completo', 'TELEFONO', 'TELÉFONO',
+                'TEL', 'CELULAR', 'phone', 'PHONE', 'numero_telefono', 'Télefono', 'Lada', 'lada',
+                'Telefono', 'num telefono', 'número de teléfono', 'movil', 'móvil', 'contacto',
+                'contact number', 'phone number', 'cell number', 'fax', 'nextel', 'linea fija',
+                'whatsapp', 'tel_contacto', 'tel_oficina', 'tel_casa', 'tel_celular', 'phone_number'
             ],
             'direccion': [
-                'direccion', 'dirección', 'domicilio', 'calle', 'DIRECCION', 'DIRECCIÓN',
-                'DOMICILIO', 'CALLE', 'address', 'ADDRESS', 'domicilio_completo'
+                'direccion', 'dirección', 'domicilio', 'calle', 'DIRECCION', 'DIRECCIÓN', 'DOMICILIO',
+                'CALLE', 'address', 'ADDRESS', 'domicilio_completo', 'DOMICILIO', 'COLONIA', 'SECTOR',
+                'DOMICILIO: CALLE', 'NÃšMERO', 'COLONIA', 'Calle', 'Numero', 'Colonia',
+                'avenida', 'av', 'ave', 'boulevard', 'blvd', 'código postal', 'cp', 'c.p.',
+                'fraccionamiento', 'fracc', 'num_exterior', 'num_interior', 'localidad', 'barrio',
+                'zip code', 'postal code', 'street', 'road', 'avenue', 'boulevard', 'suburb',
+                'floor', 'apartment', 'suite', 'número'
             ],
             'municipio': [
-                'municipio', 'ciudad', 'MUNICIPIO', 'CIUDAD', 'city', 'CITY', 'localidad'
+                'municipio', 'ciudad', 'MUNICIPIO', 'CIUDAD', 'city', 'CITY', 'localidad', 'MUNICIPIO', 'Ciudad',
+                'alcaldia', 'delegacion', 'demarcacion', 'urbanizacion', 'town', 'county'
             ],
             'estado': [
-                'estado', 'entidad', 'ESTADO', 'ENTIDAD', 'state', 'STATE', 'provincia'
+                'estado', 'entidad', 'ESTADO', 'ENTIDAD', 'state', 'STATE', 'provincia',
+                'ESTADO DE ORIGEN', 'EDO REGISTRO', 'Estado', 'ENTIDAD',
+                'state name', 'region', 'provincie'
             ],
             'ocupacion': [
                 'ocupacion', 'ocupación', 'profesion', 'profesión', 'trabajo', 'empleo',
-                'OCUPACION', 'OCUPACIÓN', 'PROFESION', 'PROFESIÓN', 'TRABAJO', 'job'
+                'OCUPACION', 'OCUPACIÓN', 'PROFESION', 'PROFESIÓN', 'TRABAJO', 'job', 'OCUPACION',
+                'puesto', 'rol', 'cargo', 'actividad economica', 'economic activity',
+                'profesion_oficio', 'giro', 'tipo_empleo'
             ],
             'edad': [
-                'edad', 'años', 'EDAD', 'AÑOS', 'age', 'AGE'
+                'edad', 'años', 'EDAD', 'AÑOS', 'age', 'AGE',
+                'fecha_nacimiento', 'fecha nacimiento', 'birthdate', 'dob', 'edad_años',
+                'años cumplidos', 'antiguedad'
             ],
             'sexo': [
-                'sexo', 'genero', 'género', 'SEXO', 'GENERO', 'GÉNERO', 'gender', 'sex'
+                'sexo', 'genero', 'género', 'SEXO', 'GENERO', 'GÉNERO', 'gender', 'sex', 'SEXO', 'Sexo',
+                'masculino', 'femenino', 'male', 'female', 'genero_id', 'genero_persona'
             ],
             'cp': [
-                'cp', 'codigo postal', 'código postal', 'CP', 'CODIGO POSTAL', 'zip'
+                'cp', 'codigo postal', 'código postal', 'CP', 'CODIGO POSTAL', 'zip', 'CODIGO POSTAL', 'CP',
+                'zip code', 'postal code', 'c_p'
+            ],
+            'clave_ife': [
+                'CLAVE IFE', 'ife', 'credencial', 'electoral', 'id electoral', 'folio_ife', 'folio ife',
+                'identificacion', 'identificación', 'documento_identidad', 'clave_elector', 'no_credencial'
+            ],
+            'campo_14': [
+                'Campo14', 'campo 14', 'field14', 'valor_extra'
+            ],
+            'info_producto': [
+                'Producto', 'Tarjeta', 'tarjeta', 'producto', 'numero_tarjeta', 'no_tarjeta',
+                'tipo tarjeta', 'tipo producto', 'servicio', 'service', 'product', 'item',
+                'plan', 'modelo', 'num_contrato', 'contrato', 'id_producto', 'id_servicio',
+                'cuenta_bancaria', 'cuenta', 'bank_account', 'numero_cuenta', 'num_cuenta',
+                'plástico', 'credito', 'débito', 'credit card', 'debit card'
+            ],
+            'fecha_registro': [
+                'fecha registro', 'fecha_registro', 'fecha de registro', 'fecha_alta', 'fecha alta',
+                'date registered', 'registration date', 'signup date', 'fecha_ingreso', 'fecha_creacion'
+            ],
+            'email': [
+                'email', 'correo', 'e-mail', 'mail', 'correo_electronico', 'email_address'
+            ],
+            'nacionalidad': [
+                'nacionalidad', 'pais', 'país', 'country', 'nacionality', 'pais_nacimiento', 'lugar_nacimiento'
+            ],
+            'estado_civil': [
+                'estado civil', 'estado_civil', 'marital status', 'civil_status',
+                'soltero', 'casado', 'divorciado', 'viudo', 'union libre'
             ]
         }
         
@@ -513,12 +777,24 @@ class ElasticsearchEngine:
     
     def search(self, query: str, max_results: int = 10) -> Dict[str, Any]:
         """
-        Búsqueda principal que maneja todo tipo de consultas
+        Búsqueda principal que maneja todo tipo de consultas con IA
         """
         print(f"🔍 Buscando: '{query}'")
         
-        # Construir consulta de Elasticsearch
-        es_query = self._build_elasticsearch_query(query)
+        # Análisis semántico inteligente
+        intention, data_type, clean_value, confidence = self._analyze_query_semantically(query)
+        
+        print(f"🧠 Análisis IA: tipo='{data_type}', valor='{clean_value}', confianza={confidence:.2f}")
+        
+        # Construir consulta inteligente
+        if confidence > 0.7:
+            # Alta confianza: usar consulta súper inteligente
+            es_query = self._build_intelligent_query(query, intention, data_type, clean_value, confidence)
+            print(f"✨ Usando búsqueda inteligente optimizada")
+        else:
+            # Baja confianza: usar método tradicional mejorado
+            es_query = self._build_elasticsearch_query(query)
+            print(f"🔧 Usando búsqueda tradicional mejorada")
         
         try:
             # Ejecutar búsqueda
@@ -530,6 +806,15 @@ class ElasticsearchEngine:
             
             # Procesar resultados
             results = self._process_search_results(response, query)
+            
+            # Agregar información del análisis
+            results['analysis'] = {
+                'intention': intention,
+                'data_type': data_type,
+                'clean_value': clean_value,
+                'confidence': confidence
+            }
+            
             return results
             
         except Exception as e:
@@ -537,23 +822,126 @@ class ElasticsearchEngine:
             return {"total": 0, "results": [], "error": str(e)}
     
     def _build_elasticsearch_query(self, query: str) -> Dict:
-        """Construye una consulta compleja de Elasticsearch"""
+        """Construye una consulta compleja de Elasticsearch (método tradicional mejorado)"""
         
         # Limpiar y analizar la query
         clean_query = self._clean_query(query)
         
-        # Detectar tipo de búsqueda
-        search_type = self._detect_search_type(clean_query)
+        # Detectar tipo de búsqueda con patrones mejorados
+        search_type = self._detect_search_type_improved(clean_query)
         
         # Construir query según el tipo detectado
-        if search_type == "phone":
-            return self._build_phone_query(clean_query)
-        elif search_type == "address":
+        if search_type == "telefono":
+            return self._build_phone_query_improved(clean_query)
+        elif search_type == "tarjeta":
+            return self._build_card_query_improved(clean_query)
+        elif search_type == "direccion_fisica":
             return self._build_address_query(clean_query)
-        elif search_type == "name":
+        elif search_type == "nombre_persona":
             return self._build_name_query(clean_query)
         else:
-            return self._build_multi_field_query(clean_query)
+            return self._build_fallback_query(clean_query)
+        
+    def _build_intelligent_query(self, query: str, intention: str, data_type: str, clean_value: str, confidence: float) -> Dict:
+        """
+        Construye una consulta súper inteligente basada en el análisis semántico
+        """
+        
+        # Configurar boost según confianza y tipo de datos
+        field_boosts = {
+            'tarjeta': {'tarjeta': 10, 'numero_tarjeta': 8, 'card': 6},
+            'telefono': {'telefono_completo': 10, 'telefono': 8, 'celular': 6, 'lada': 4},
+            'nombre_persona': {'nombre_completo': 10, 'nombre': 8, 'nombre_y_apellidos': 7, 'paterno': 5, 'materno': 5},
+            'documento': {'clave_ife': 10, 'identificacion': 8, 'credencial': 6},
+            'direccion_fisica': {'direccion': 10, 'domicilio': 9, 'calle': 8, 'colonia': 7, 'municipio': 6, 'estado': 5, 'cp': 10},
+            'ocupacion_profesion': {'ocupacion': 10, 'profesion': 8, 'trabajo': 7},
+            'edad_genero': {'edad': 10, 'sexo': 8, 'genero': 8},
+            'producto_servicio': {'producto': 10, 'servicio': 8},
+            'cp': {'cp': 10, 'codigo_postal': 9}
+        }
+        
+        # Obtener campos relevantes para este tipo de datos
+        relevant_fields = field_boosts.get(data_type, {})
+        
+        # Construir consultas múltiples con diferentes estrategias
+        should_clauses = []
+        
+        # Estrategia 1: Búsqueda exacta en campos específicos (alta prioridad)
+        if relevant_fields:
+            for field, boost in relevant_fields.items():
+                should_clauses.extend([
+                    {
+                        "match": {
+                            field: {
+                                "query": clean_value,
+                                "boost": boost * confidence,
+                                "fuzziness": "AUTO"
+                            }
+                        }
+                    },
+                    {
+                        "term": {
+                            f"{field}.keyword": {
+                                "value": clean_value,
+                                "boost": boost * confidence * 1.2
+                            }
+                        }
+                    }
+                ])
+        
+        # Estrategia 2: Búsqueda wildcard para números parciales
+        if clean_value.isdigit() and len(clean_value) >= 4:
+            wildcard_patterns = [
+                f"*{clean_value}*",  # Contiene el número
+                f"{clean_value}*",   # Empieza con el número
+                f"*{clean_value}"    # Termina con el número
+            ]
+            
+            fields_to_search = list(relevant_fields.keys()) if relevant_fields else [
+                'telefono_completo', 'tarjeta', 'numero_tarjeta', 'celular'
+            ]
+            
+            for field in fields_to_search:
+                for pattern in wildcard_patterns:
+                    should_clauses.append({
+                        "wildcard": {
+                            f"{field}.keyword": {
+                                "value": pattern,
+                                "boost": confidence * 3
+                            }
+                        }
+                    })
+        
+        # Estrategia 3: Búsqueda multi-field en todos los campos (backup)
+        should_clauses.append({
+            "multi_match": {
+                "query": clean_value,
+                "fields": ["*"],
+                "type": "best_fields",
+                "fuzziness": "AUTO",
+                "boost": confidence * 0.5
+            }
+        })
+        
+        # Estrategia 4: Búsqueda de la consulta original (por si las anteriores fallan)
+        should_clauses.append({
+            "multi_match": {
+                "query": query,
+                "fields": ["*"],
+                "type": "best_fields",
+                "fuzziness": "AUTO",
+                "boost": 0.3
+            }
+        })
+        
+        return {
+            "query": {
+                "bool": {
+                    "should": should_clauses,
+                    "minimum_should_match": 1
+                }
+            }
+        }
     
     def _clean_query(self, query: str) -> str:
         """Limpia y normaliza la consulta"""
@@ -596,7 +984,7 @@ class ElasticsearchEngine:
                 {"match": {"telefono_completo": {"query": number, "fuzziness": "1"}}},
                 {"wildcard": {"telefono_completo.keyword": f"*{number}*"}},
                 {"prefix": {"telefono_completo.keyword": number}},
-                {"suffix": {"telefono_completo.keyword": number}}
+                {"wildcard": {"telefono_completo.keyword": f"*{number}"}}
             ])
         
         return {
@@ -773,6 +1161,110 @@ class ElasticsearchEngine:
             print(f"⚠️ Índice '{self.index_name}' no existe")
         except Exception as e:
             print(f"❌ Error eliminando índice: {e}")
+
+    def _detect_search_type_improved(self, query: str) -> str:
+        """Detección mejorada de tipos de búsqueda"""
+        
+        # Detectar números de tarjeta (15-16 dígitos)
+        if re.search(r'\b\d{15,16}\b', query):
+            return "card"
+        
+        # Detectar teléfonos (7-12 dígitos)
+        if re.search(r'\b\d{7,12}\b', query):
+            return "phone"
+        
+        # Detectar patrones de dirección
+        address_patterns = [
+            r'\b(calle|avenida|av|blvd|boulevard)\b',
+            r'\b(colonia|col|sector|fracc)\b',
+            r'\b(vive|direccion|domicilio)\b'
+        ]
+        if any(re.search(pattern, query, re.IGNORECASE) for pattern in address_patterns):
+            return "address"
+        
+        # Detectar patrones de nombre
+        name_patterns = [
+            r'\b(quien|nombre|persona|llama)\b',
+            r'\b[A-ZÁÉÍÓÚ][a-záéíóú]+ [A-ZÁÉÍÓÚ][a-záéíóú]+\b'  # Nombres propios
+        ]
+        if any(re.search(pattern, query, re.IGNORECASE) for pattern in name_patterns):
+            return "name"
+        
+        return "general"
+
+    def _build_phone_query_improved(self, query: str) -> Dict:
+        """Consulta mejorada para teléfonos (SIN suffix que causaba error)"""
+        
+        numbers = re.findall(r'\d+', query)
+        should_clauses = []
+        
+        for number in numbers:
+            should_clauses.extend([
+                {"match": {"telefono_completo": {"query": number, "fuzziness": "1"}}},
+                {"wildcard": {"telefono_completo.keyword": f"*{number}*"}},
+                {"prefix": {"telefono_completo.keyword": number}},
+                # ELIMINADO: suffix (causaba el error)
+                {"wildcard": {"telefono_completo.keyword": f"*{number}"}}  # Reemplaza suffix
+            ])
+        
+        return {
+            "query": {
+                "bool": {
+                    "should": should_clauses,
+                    "minimum_should_match": 1
+                }
+            }
+        }
+
+    def _build_card_query_improved(self, query: str) -> Dict:
+        """Consulta mejorada para tarjetas"""
+        
+        numbers = re.findall(r'\d+', query)
+        should_clauses = []
+        
+        for number in numbers:
+            should_clauses.extend([
+                {"match": {"tarjeta": {"query": number, "fuzziness": "0"}}},
+                {"wildcard": {"tarjeta.keyword": f"*{number}*"}},
+                {"prefix": {"tarjeta.keyword": number}},
+                {"term": {"tarjeta.keyword": number}}
+            ])
+        
+        return {
+            "query": {
+                "bool": {
+                    "should": should_clauses,
+                    "minimum_should_match": 1
+                }
+            }
+        }
+
+    def _build_fallback_query(self, query: str) -> Dict:
+        """Consulta de respaldo súper flexible"""
+        
+        return {
+            "query": {
+                "bool": {
+                    "should": [
+                        {
+                            "multi_match": {
+                                "query": query,
+                                "fields": ["*"],
+                                "type": "best_fields",
+                                "fuzziness": "AUTO"
+                            }
+                        },
+                        {
+                            "query_string": {
+                                "query": f"*{query}*",
+                                "fields": ["*"],
+                                "default_operator": "OR"
+                            }
+                        }
+                    ]
+                }
+            }
+        }
 
 # Función de utilidad para testing
 def test_elasticsearch_engine():

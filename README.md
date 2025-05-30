@@ -18,7 +18,6 @@ py -m venv venv
 pip install -r requirements.txt
 pip install pyodbc
 pip install dbfread
-
 ```
 3.1 Si sale este error utiliza...
 
@@ -102,6 +101,16 @@ pip install datasets
 pip install peft
 pip install trl
 pip install --upgrade accelerate
+```
+
+4. Instalar librerias para mayor inteligencia
+* spacy: Para análisis de lenguaje natural en español
+* elasticsearch-dsl: Para consultas más inteligentes
+* es_core_news_sm: Modelo de español de spaCy
+```sh
+pip install spacy
+pip install elasticsearch-dsl
+python -m spacy download es_core_news_sm
 ```
 
 ## Instalar Elasticsearch

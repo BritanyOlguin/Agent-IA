@@ -18,7 +18,7 @@ class AgentePaginacion:
     def __init__(self):
         self.engine = None
         self.total_docs = 0
-        self.resultados_por_pagina = 100
+        self.resultados_por_pagina = 50
         
         # Estado de navegación
         self.ultima_consulta = ""
@@ -181,7 +181,7 @@ class AgentePaginacion:
         print("   ✅ Tolerancia a errores ortográficos")
         print("   ✅ Búsqueda parcial (ej: 'Adrian' encuentra 'Adrian Lino')")
         print("   ✅ Búsqueda por cualquier campo")
-        print("   ✅ Navegación por páginas de 100 resultados")
+        print("   ✅ Navegación por páginas de 50 resultados")
         print("   ✅ Velocidad extrema (milisegundos)")
     
     def mostrar_estadisticas(self):
