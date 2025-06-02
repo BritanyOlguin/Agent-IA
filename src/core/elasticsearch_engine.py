@@ -30,6 +30,17 @@ class ElasticsearchEngine:
         self.host = host
         self.port = port
         self.index_name = "agente_ciudadanos"
+
+        # Configuración de umbrales de relevancia
+        self.relevance_thresholds = {
+            'high': 85,      # Coincidencias muy altas (85-100%)
+            'medium': 75,    # Coincidencias buenas (75-85%)
+            'low': 50,       # Coincidencias aceptables (50-75%)
+            'minimum': 50    # Umbral mínimo para mostrar (filtrar basura)
+        }
+        
+        # Configuración para normalización de scores
+        self.max_elasticsearch_score = 20.0  # Score máximo típico de Elasticsearch
         
         # Configurar cliente de Elasticsearch
         self.es = Elasticsearch(
@@ -401,6 +412,84 @@ class ElasticsearchEngine:
         overall_confidence = (intention_confidence + data_confidence) / 2
         
         return intention, data_type, clean_value, overall_confidence
+    
+    def _normalize_score_to_percentage(self, elasticsearch_score: float, query_length: int, data_type: str) -> float:
+        """
+        Convierte el score de Elasticsearch a un porcentaje de relevancia más entendible
+        
+        Args:
+            elasticsearch_score: Score original de Elasticsearch
+            query_length: Longitud de la consulta (para ajustar expectativas)
+            data_type: Tipo de datos detectado
+            
+        Returns:
+            float: Porcentaje de relevancia (0-100)
+        """
+        
+        # Factores de ajuste según el tipo de búsqueda
+        type_multipliers = {
+            'tarjeta': 1.2,      # Números exactos deberían tener score alto
+            'telefono': 1.1,     # Números de teléfono también
+            'documento': 1.2,    # Documentos como IFE
+            'nombre': 0.9,       # Nombres pueden variar más
+            'direccion': 0.8,    # Direcciones son más flexibles
+            'general': 0.7       # Búsquedas generales son menos precisas
+        }
+        
+        # Ajustar por tipo de datos
+        multiplier = type_multipliers.get(data_type, 0.8)
+        
+        # Ajustar por longitud de consulta
+        if query_length > 15:  # Consultas largas y específicas
+            multiplier *= 1.1
+        elif query_length < 5:  # Consultas muy cortas
+            multiplier *= 0.9
+        
+        # Normalizar a porcentaje
+        normalized_score = (elasticsearch_score / self.max_elasticsearch_score) * 100 * multiplier
+        
+        # Asegurar que esté entre 0 y 100
+        return min(100.0, max(0.0, normalized_score))
+
+    def _categorize_relevance(self, percentage: float) -> dict:
+        """
+        Categoriza un resultado según su porcentaje de relevancia
+        
+        Args:
+            percentage: Porcentaje de relevancia (0-100)
+            
+        Returns:
+            dict: Información de la categoría
+        """
+        
+        if percentage >= self.relevance_thresholds['high']:
+            return {
+                'category': 'high',
+                'label': 'Coincidencia Muy Alta',
+                'emoji': '🎯',
+                'color': 'green'
+            }
+        elif percentage >= self.relevance_thresholds['medium']:
+            return {
+                'category': 'medium',
+                'label': 'Coincidencia Buena',
+                'emoji': '🔍',
+                'color': 'yellow'
+            }
+        elif percentage >= self.relevance_thresholds['low']:
+            return {
+                'category': 'low',
+                'label': 'Coincidencia Parcial',
+                'emoji': '📋',
+                'color': 'orange'
+            }
+        else:
+            return {
+                'category': 'trash',
+                'label': 'Irrelevante',
+                'emoji': '🗑️',
+                'color': 'red'
+            }
     
     def index_data_from_files(self, data_folder: str):
         """
@@ -795,6 +884,8 @@ class ElasticsearchEngine:
             # Baja confianza: usar método tradicional mejorado
             es_query = self._build_elasticsearch_query(query)
             print(f"🔧 Usando búsqueda tradicional mejorada")
+            # Usar tipo general para búsqueda tradicional
+            data_type = 'general'
         
         try:
             # Ejecutar búsqueda
@@ -805,7 +896,7 @@ class ElasticsearchEngine:
             )
             
             # Procesar resultados
-            results = self._process_search_results(response, query)
+            results = self._process_search_results(response, query, data_type)
             
             # Agregar información del análisis
             results['analysis'] = {
@@ -1089,26 +1180,80 @@ class ElasticsearchEngine:
             }
         }
     
-    def _process_search_results(self, response: Dict, original_query: str) -> Dict:
-        """Procesa y formatea los resultados de Elasticsearch"""
+    def _process_search_results(self, response: Dict, original_query: str, data_type: str = 'general') -> Dict:
+        """Procesa, filtra y ordena los resultados de Elasticsearch por relevancia"""
         
         hits = response.get('hits', {})
-        total = hits.get('total', {}).get('value', 0)
-        results = []
+    
+        # Manejar diferentes formatos de total en Elasticsearch
+        try:
+            if isinstance(hits.get('total'), dict):
+                total_elasticsearch = hits.get('total', {}).get('value', 0)
+            else:
+                total_elasticsearch = hits.get('total', 0)
+        except (KeyError, TypeError, AttributeError):
+            total_elasticsearch = 0
+            print("⚠️ No se pudo obtener el total de resultados")
+        
+        query_length = len(original_query)
+        
+        # Procesar cada resultado
+        all_results = []
+        filtered_results = []
         
         for hit in hits.get('hits', []):
             source = hit['_source']
-            score = hit['_score']
+            elasticsearch_score = hit['_score']
             
-            # Formatear resultado para mostrar
-            formatted_result = self._format_result(source, score)
-            results.append(formatted_result)
+            # Convertir score a porcentaje
+            percentage = self._normalize_score_to_percentage(
+                elasticsearch_score, query_length, data_type
+            )
+            
+            # Categorizar relevancia
+            relevance_info = self._categorize_relevance(percentage)
+            
+            # Formatear resultado
+            formatted_result = self._format_result(source, elasticsearch_score)
+            
+            # Agregar información de relevancia
+            formatted_result.update({
+                'relevance_percentage': round(percentage, 1),
+                'relevance_category': relevance_info['category'],
+                'relevance_label': relevance_info['label'],
+                'relevance_emoji': relevance_info['emoji']
+            })
+            
+            all_results.append(formatted_result)
+            
+            # Filtrar: solo agregar si supera el umbral mínimo
+            if percentage >= self.relevance_thresholds['minimum']:
+                filtered_results.append(formatted_result)
+        
+        # Ordenar por porcentaje de relevancia (mayor a menor)
+        filtered_results.sort(key=lambda x: x['relevance_percentage'], reverse=True)
+        
+        # Agrupar por categorías para mejor presentación
+        categorized_results = {
+            'high': [],
+            'medium': [],
+            'low': []
+        }
+        
+        for result in filtered_results:
+            category = result['relevance_category']
+            if category in categorized_results:
+                categorized_results[category].append(result)
         
         return {
-            "total": total,
-            "results": results,
+            "total_found": total_elasticsearch,
+            "total_filtered": len(filtered_results),
+            "total_discarded": total_elasticsearch - len(filtered_results),
+            "results": filtered_results,
+            "categorized": categorized_results,
             "query": original_query,
-            "took": response.get('took', 0)
+            "took": response.get('took', 0),
+            "thresholds": self.relevance_thresholds
         }
     
     def _format_result(self, source: Dict, score: float) -> Dict:

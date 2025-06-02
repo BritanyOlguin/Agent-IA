@@ -56,18 +56,20 @@ class AgentePaginacion:
             # Obtener TODOS los resultados de una vez (Elasticsearch maneja esto eficientemente)
             resultados = self.engine.search(consulta, max_results=10000)  # Máximo práctico
             
-            if resultados['total'] == 0:
+            if resultados.get('total_filtered', 0) == 0:
                 print(f"❌ No se encontraron resultados para: '{consulta}'")
                 return False
             
             # Guardar estado
             self.ultima_consulta = consulta
             self.todos_resultados = resultados['results']
+            # Guardar información adicional para mostrar estadísticas
+            self.ultimo_resultado_info = resultados
             self.total_resultados = len(self.todos_resultados)
             self.total_paginas = math.ceil(self.total_resultados / self.resultados_por_pagina)
             self.pagina_actual = 1
             
-            print(f"✅ Búsqueda completada en {resultados['took']}ms")
+            print(f"✅ Búsqueda completada en {resultados.get('took', 0)}ms")
             print(f"📊 Total encontrados: {self.total_resultados:,} resultados")
             print(f"📄 Se mostrarán en {self.total_paginas} páginas de {self.resultados_por_pagina} resultados cada una")
             
@@ -94,11 +96,28 @@ class AgentePaginacion:
         print(f"📄 PÁGINA {self.pagina_actual} DE {self.total_paginas}")
         print(f"🔍 Consulta: '{self.ultima_consulta}'")
         print(f"📊 Mostrando resultados {inicio + 1:,} al {fin:,} de {self.total_resultados:,} totales")
+
+        # Mostrar información de filtrado si está disponible
+        if hasattr(self, 'ultimo_resultado_info'):
+            info = self.ultimo_resultado_info
+            total_encontrado = info.get('total_found', 0)
+            total_filtrado = info.get('total_filtered', 0)
+            total_descartado = info.get('total_discarded', 0)
+            
+            if total_descartado > 0:
+                print(f"🗑️ Se filtraron {total_descartado:,} resultados de baja relevancia (< 50%)")
+                print(f"✅ Mostrando {total_filtrado:,} resultados de calidad de {total_encontrado:,} encontrados")
+
         print("="*80)
-        
+
         # Mostrar resultados de esta página
         for i, resultado in enumerate(resultados_pagina, start=inicio + 1):
-            print(f"\n📋 RESULTADO #{i:,} (Relevancia: {resultado['score']:.2f})")
+            # Información de relevancia mejorada
+            relevance_emoji = resultado.get('relevance_emoji', '📋')
+            relevance_label = resultado.get('relevance_label', 'Relevancia')
+            relevance_percentage = resultado.get('relevance_percentage', 0)
+
+            print(f"\n{relevance_emoji} RESULTADO #{i:,} - {relevance_label} ({relevance_percentage}%)")
             print(f"📁 Fuente: {resultado['fuente']}")
             
             # Mostrar datos del registro
