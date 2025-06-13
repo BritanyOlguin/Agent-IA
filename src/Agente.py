@@ -158,32 +158,6 @@ class AgentePaginacion:
             print(f"❌ Página inválida. Debe estar entre 1 y {self.total_paginas}")
             return False
     
-    def mostrar_ayuda(self):
-        """Muestra ejemplos de consultas"""
-        ejemplos = [
-            "Adrian Lino",
-            "Malva 101", 
-            "telefono 6934463",
-            "Aguascalientes",
-            "ama de casa",
-            "Alma Garcia",
-            "CDMX",
-            "Guadalupe",
-            "zapopan",
-            "sector juarez"
-        ]
-        
-        print("\n💡 EJEMPLOS DE CONSULTAS:")
-        for ejemplo in ejemplos:
-            print(f"   🔍 {ejemplo}")
-        
-        print("\n✨ CARACTERÍSTICAS:")
-        print("   ✅ Tolerancia a errores ortográficos")
-        print("   ✅ Búsqueda parcial (ej: 'Adrian' encuentra 'Adrian Lino')")
-        print("   ✅ Búsqueda por cualquier campo")
-        print("   ✅ Navegación por páginas de 50 resultados")
-        print("   ✅ Velocidad extrema (milisegundos)")
-    
     def mostrar_estadisticas(self):
         """Muestra estadísticas del sistema y búsqueda actual"""
         if self.engine:
@@ -217,9 +191,6 @@ def main():
     print(f"📊 Base de datos: {agente.total_docs:,} registros disponibles")
     print(f"📄 Resultados por página: {agente.resultados_por_pagina}")
     
-    # Mostrar ayuda inicial
-    agente.mostrar_ayuda()
-    
     print("\n" + "-"*80)
     print("💬 COMANDOS DISPONIBLES:")
     print("   🔍 [consulta] - Nueva búsqueda")
@@ -242,10 +213,6 @@ def main():
             if comando in ['salir', 'exit', 'quit']:
                 print("\n👋 ¡Hasta luego!")
                 break
-            
-            # Comandos de ayuda
-            elif comando in ['ayuda', 'help']:
-                agente.mostrar_ayuda()
             
             # Estadísticas
             elif comando in ['estadisticas', 'stats']:

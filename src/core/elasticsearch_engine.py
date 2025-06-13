@@ -552,13 +552,16 @@ class ElasticsearchEngine:
         # Mapeo mejorado de columnas (más flexible)
         column_mapping = {
             'nombre_completo': [
-                'nombre_completo', 'nombre completo', 'nombre y apellidos', 'nombre_y_apellidos',
-                'NOMBRE_COMPLETO', 'NOMBRE COMPLETO', 'nombre', 'NOMBRE', 'Name', 'NAME',
-                'PATERNO', 'paterno', 'MATERNO', 'materno', 'Nombre Completo',
-                'primer nombre', 'segundo nombre', 'apellido paterno', 'apellido materno',
-                'first name', 'last name', 'surname', 'given name', 'full name',
-                'razon social', 'razón social', 'company name', 'business name',
-                'titular', 'beneficiario'
+                'nombre_completo', 'nombre completo', 'nombre y apellidos', 'nombre_y_apellidos', 'NOMBRE_COMPLETO', 'NOMBRE COMPLETO', 'Nombre Completo', 'surname', 'full name', 'razon social', 'razón social', 'company name', 'business name', 'titular', 'beneficiario'
+            ],
+            'nombre': [
+                'nombre', 'nombres', 'primer nombre', 'given name', 'first name', 'NOMBRE', 'Name', 'NAME'
+            ],
+            'paterno': [
+                'paterno', 'apellido paterno', 'last name', 'surname', 'PATERNO'
+            ],
+            'materno': [
+                'materno', 'apellido materno', 'MATERNO'
             ],
             'telefono_completo': [
                 'telefono', 'teléfono', 'tel', 'celular', 'telefono_completo', 'TELEFONO', 'TELÉFONO',
@@ -673,7 +676,28 @@ class ElasticsearchEngine:
                     if pd.notna(valor) and str(valor).strip() and str(valor).strip().lower() != 'nan':
                         doc[target_field] = str(valor).strip()
                         tiene_datos = True
-            
+
+            # Esamblar nombre completo a partir de campos separados
+            partes_nombre = []
+
+            # NO SE PUEDE AGARRAR LAS VARIACIONES DE LOS CAMBPOS DEL COLUMN MAPPING?
+            nombre_val = doc.get('nombre')
+            paterno_val = doc.get('paterno')
+            materno_val = doc.get('materno')
+
+            if nombre_val:
+                partes_nombre.append(str(nombre_val))
+            if paterno_val:
+                partes_nombre.append(str(paterno_val))
+            if materno_val:
+                partes_nombre.append(str(materno_val))
+
+            if len(partes_nombre) >= 2:
+                doc['nombre_completo'] = ' '.join(partes_nombre)
+                doc.pop('nombre', None)
+                doc.pop('paterno', None)
+                doc.pop('materno', None)
+
             # Agregar otros campos que no están en el mapeo
             for col in df.columns:
                 if col not in columnas_usadas:
