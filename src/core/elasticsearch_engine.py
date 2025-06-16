@@ -615,11 +615,13 @@ class ElasticsearchEngine:
                 'materno', 'apellido materno', 'MATERNO'
             ],
             'telefono_completo': [
-                'telefono', 'teléfono', 'tel', 'celular', 'telefono_completo', 'TELEFONO', 'TELÉFONO',
-                'TEL', 'CELULAR', 'phone', 'PHONE', 'numero_telefono', 'Télefono', 'Lada', 'lada',
-                'Telefono', 'num telefono', 'número de teléfono', 'movil', 'móvil', 'contacto',
-                'contact number', 'phone number', 'cell number', 'fax', 'nextel', 'linea fija',
-                'whatsapp', 'tel_contacto', 'tel_oficina', 'tel_casa', 'tel_celular', 'phone_number'
+                'telefono_completo', 'teléfono completo', 'celular', 'phone', 'móvil'
+            ],
+            'lada': [
+                'lada', 'Lada', 'area code', 'código de área'
+            ],
+            'telefono': [
+                'telefono', 'teléfono', 'tel', 'TELEFONO', 'número', 'Telefono'
             ],
             'direccion': [
                 'direccion', 'dirección', 'domicilio', 'calle', 'DIRECCION', 'DIRECCIÓN', 'DOMICILIO',
@@ -737,6 +739,13 @@ class ElasticsearchEngine:
                     valor = doc[campo]
                     if str(valor).isdigit() and str(valor) in self.inegi_map:
                         doc[campo] = self.inegi_map[str(valor)]
+
+            # Ensamblaje de teléfono
+            if 'lada' in doc and 'telefono' in doc:
+                doc['telefono_completo'] = str(doc['lada']) + str(doc['telefono'])
+                
+                doc.pop('lada', None)
+                doc.pop('telefono', None)
 
             # Ensamblaje de nombres
             partes_nombre = []
