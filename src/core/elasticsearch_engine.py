@@ -30,6 +30,19 @@ class ElasticsearchEngine:
         self.host = host
         self.port = port
         self.index_name = "agente_ciudadanos"
+
+        # Traduccion de códigos INEGI a nombres de estados
+        self.inegi_map = {
+            '1': 'Aguascalientes', '2': 'Baja California', '3': 'Baja California Sur',
+            '4': 'Campeche', '5': 'Coahuila', '6': 'Colima', '7': 'Chiapas',
+            '8': 'Chihuahua', '9': 'Ciudad de México', '10': 'Durango',
+            '11': 'Guanajuato', '12': 'Guerrero', '13': 'Hidalgo', '14': 'Jalisco',
+            '15': 'México', '16': 'Michoacán', '17': 'Morelos', '18': 'Nayarit',
+            '19': 'Nuevo León', '20': 'Oaxaca', '21': 'Puebla', '22': 'Querétaro',
+            '23': 'Quintana Roo', '24': 'San Luis Potosí', '25': 'Sinaloa',
+            '26': 'Sonora', '27': 'Tabasco', '28': 'Tamaulipas', '29': 'Tlaxcala',
+            '30': 'Veracruz', '31': 'Yucatán', '32': 'Zacatecas'
+        }
         
         # Configurar cliente de Elasticsearch
         self.es = Elasticsearch(
@@ -180,7 +193,8 @@ class ElasticsearchEngine:
                             "filter": [
                                 "lowercase",
                                 "asciifolding",
-                                "direcciones_synonym_filter"
+                                "direcciones_synonym_filter",
+                                "lugares_synonym_filter"
                             ]
                         },
                         "telefono_analyzer": {
@@ -220,7 +234,44 @@ class ElasticsearchEngine:
                             "type": "edge_ngram",
                             "min_gram": 2,
                             "max_gram": 15
-                        }
+                        },
+                        "lugares_synonym_filter": {
+                            "type": "synonym",
+                            "synonyms": [
+                                "aguascalientes,ags",
+                                "baja california,bc",
+                                "baja california sur,bcs",
+                                "campeche,camp",
+                                "chiapas,chis",
+                                "chihuahua,chih",
+                                "ciudad de mexico,cdmx,df,distrito federal",
+                                "coahuila,coah",
+                                "colima,col",
+                                "durango,dgo",
+                                "estado de mexico,edomex,mex",
+                                "guanajuato,gto",
+                                "guerrero,gro",
+                                "hidalgo,hgo",
+                                "jalisco,jal,gdl",
+                                "michoacan,mich",
+                                "morelos,mor",
+                                "nayarit,nay",
+                                "nuevo leon,nl",
+                                "oaxaca,oax",
+                                "puebla,pue",
+                                "queretaro,qro",
+                                "quintana roo,q roo",
+                                "san luis potosi,slp",
+                                "sinaloa,sin",
+                                "sonora,son",
+                                "tabasco,tab",
+                                "tamaulipas,tamps",
+                                "tlaxcala,tlax",
+                                "veracruz,ver",
+                                "yucatan,yuc",
+                                "zacatecas,zac"
+                            ]
+                        },
                     }
                 }
             },
@@ -585,8 +636,8 @@ class ElasticsearchEngine:
             ],
             'estado': [
                 'estado', 'entidad', 'ESTADO', 'ENTIDAD', 'state', 'STATE', 'provincia',
-                'ESTADO DE ORIGEN', 'EDO REGISTRO', 'Estado', 'ENTIDAD',
-                'state name', 'region', 'provincie'
+                'ESTADO DE ORIGEN', 'EDO REGISTRO', 'Edo Registro', 'Estado', 'ENTIDAD',
+                'state name', 'region', 'provincie',
             ],
             'ocupacion': [
                 'ocupacion', 'ocupación', 'profesion', 'profesión', 'trabajo', 'empleo',
@@ -644,22 +695,12 @@ class ElasticsearchEngine:
         for target_field, possible_columns in column_mapping.items():
             for col in df.columns:
                 col_lower = col.lower().strip()
-                if col_lower in [p.lower() for p in possible_columns] and col not in columnas_usadas:
+                if col_lower in [p.lower().strip() for p in possible_columns] and col not in columnas_usadas:
                     campo_detectado[target_field] = col
                     columnas_usadas.add(col)
                     print(f"   🎯 Detectado: {target_field} -> {col}")
                     break
-        
-        if not campo_detectado:
-            print("   ⚠️ No se detectaron campos conocidos, usando nombres originales...")
-            # Si no se detecta nada, usar las primeras columnas
-            cols = list(df.columns)
-            if len(cols) > 0: campo_detectado['nombre_completo'] = cols[0]
-            if len(cols) > 1: campo_detectado['telefono_completo'] = cols[1]
-            if len(cols) > 2: campo_detectado['direccion'] = cols[2]
-        
-        # Procesar cada fila
-        docs_creados = 0
+
         for idx, row in df.iterrows():
             doc = {
                 'fuente': fuente,
@@ -677,20 +718,35 @@ class ElasticsearchEngine:
                         doc[target_field] = str(valor).strip()
                         tiene_datos = True
 
-            # Esamblar nombre completo a partir de campos separados
-            partes_nombre = []
+            for col in df.columns:
+                if col not in columnas_usadas:
+                    valor = row[col]
+                    if pd.notna(valor) and str(valor).strip() and str(valor).strip().lower() != 'nan':
+                        field_name = col.lower().replace(' ', '_').replace('-', '_')
+                        doc[field_name] = str(valor).strip()
+                        tiene_datos = True
 
-            # NO SE PUEDE AGARRAR LAS VARIACIONES DE LOS CAMBPOS DEL COLUMN MAPPING?
+            # Traducción de estados
+            nombres_posibles_estado = column_mapping.get('estado', [])
+            campos_a_traducir = set(['estado'])
+            for nombre in nombres_posibles_estado:
+                campos_a_traducir.add(nombre.lower().replace(' ', '_').replace('-', '_'))
+            
+            for campo in list(campos_a_traducir):
+                if campo in doc:
+                    valor = doc[campo]
+                    if str(valor).isdigit() and str(valor) in self.inegi_map:
+                        doc[campo] = self.inegi_map[str(valor)]
+
+            # Ensamblaje de nombres
+            partes_nombre = []
             nombre_val = doc.get('nombre')
             paterno_val = doc.get('paterno')
             materno_val = doc.get('materno')
 
-            if nombre_val:
-                partes_nombre.append(str(nombre_val))
-            if paterno_val:
-                partes_nombre.append(str(paterno_val))
-            if materno_val:
-                partes_nombre.append(str(materno_val))
+            if nombre_val: partes_nombre.append(str(nombre_val))
+            if paterno_val: partes_nombre.append(str(paterno_val))
+            if materno_val: partes_nombre.append(str(materno_val))
 
             if len(partes_nombre) >= 2:
                 doc['nombre_completo'] = ' '.join(partes_nombre)
@@ -698,28 +754,20 @@ class ElasticsearchEngine:
                 doc.pop('paterno', None)
                 doc.pop('materno', None)
 
-            # Agregar otros campos que no están en el mapeo
-            for col in df.columns:
-                if col not in columnas_usadas:
-                    valor = row[col]
-                    if pd.notna(valor) and str(valor).strip() and str(valor).strip().lower() != 'nan':
-                        # Normalizar nombre del campo
-                        field_name = col.lower().replace(' ', '_').replace('-', '_')
-                        doc[field_name] = str(valor).strip()
-                        tiene_datos = True
-            
-            # Solo agregar si tiene datos útiles
-            if tiene_datos and len(doc) > 3:  # Más que solo metadatos
+            # Logica de normalización
+            contenido_completo = [str(v) for k, v in doc.items() if k not in ['fuente', 'fecha_indexado', 'id_original'] and v]
+            doc['contenido_completo'] = ' '.join(contenido_completo)
+
+            if tiene_datos and len(doc) > 4:
                 docs.append(doc)
-                docs_creados += 1
         
-        print(f"   ✅ Preparados {docs_creados} documentos válidos de {len(df)} filas")
+        print(f"   ✅ Preparados {len(docs)} documentos válidos de {len(df)} filas")
         
         # Mostrar ejemplo de documento
         if docs:
-            print(f"   📋 Ejemplo de documento:")
-            ejemplo = docs[0]
-            for key, value in list(ejemplo.items())[:5]:  # Solo mostrar 5 campos
+            print(f"   📋 Ejemplo de documento procesado:")
+            ejemplo_procesado = {k: v for k, v in docs[0].items() if k != 'contenido_completo'}
+            for key, value in list(ejemplo_procesado.items())[:6]:
                 print(f"      {key}: {value}")
         
         return docs
