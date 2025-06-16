@@ -339,119 +339,67 @@ class ElasticsearchEngine:
         else:
             print(f"✅ Índice '{self.index_name}' ya existe")
 
-    def _analyze_query_semantically(self, query: str) -> Tuple[str, str, str, float]:
+    def _analyze_query_semantically(self, query: str) -> Dict[str, Any]:
         """
-        Analiza la consulta usando NLP para entender intención y tipo de datos
-        
-        Returns:
-            Tuple[intention, data_type, clean_value, confidence]
+        Analiza consultas complejas, extrayendo múltiples entidades y exclusiones.
         """
         query_lower = query.lower().strip()
-
-        # Detectar intención del usuario
-        intention = 'buscar_informacion'  # default
-        intention_confidence = 0.5
-
-        for intent, patterns in self.intention_patterns.items():
-            for pattern in patterns:
-                if pattern in query_lower:
-                    intention = intent
-                    intention_confidence = 0.9
-                    break
-            if intention_confidence > 0.8: # Solo se detiene si la confianza es alta
-                break
-
-        # Detectar tipo de datos semánticamente (inicial)
-        data_type = 'general'
-        data_confidence = 0.5
-
-        for dtype, patterns in self.data_type_patterns.items():
-            for pattern in patterns:
-                if pattern in query_lower:
-                    data_type = dtype
-                    data_confidence = 0.9
-                    break
-            if data_confidence > 0.8: # Solo se detiene si la confianza es alta
-                break
         
-        clean_value = query_lower
+        # El "expediente" del detective. Ahora guardará múltiples hallazgos.
+        analysis = {
+            'nombres': [],
+            'ubicaciones': [],
+            'profesiones': [],
+            'palabras_clave': [],
+            'exclusiones': {}  # <-- Aquí guardaremos lo que se debe excluir
+        }
         
-        # Regex para CLAVE IFE (18 caracteres alfanuméricos)
-        clave_ife_match = re.search(r'\b[A-Z0-9]{18}\b', query)
-        if clave_ife_match:
-            clean_value = clave_ife_match.group(0)
-            data_type = 'documento' # Sobrescribe si el patrón es claro
-            data_confidence = 0.98
+        # --- Lógica para detectar y extraer exclusiones ---
+        exclusion_patterns = [
+            r'menos ([\w\s]+)', r'excepto ([\w\s]+)',
+            r'sin ([\w\s]+)', r'pero no ([\w\s]+)'
+        ]
+        
+        query_para_analisis = query_lower
 
-        # Regex para números de tarjeta (16 dígitos)
-        elif re.search(r'\b\d{16}\b', query):
-            clean_value = re.search(r'\b\d{16}\b', query).group(0)
-            data_type = 'tarjeta'
-            data_confidence = 0.99 # Muy alta confianza para 16 dígitos
-
-        # Regex para teléfonos (10 dígitos para México, u 11 si incluye prefijo internacional +1)
-        elif re.search(r'\b\d{10,11}\b', query):
-            clean_value = re.search(r'\b\d{10,11}\b', query).group(0)
-            data_type = 'telefono'
-            data_confidence = 0.95
-
-        # Regex para códigos postales (5 dígitos)
-        elif re.search(r'\b\d{5}\b', query):
-            clean_value = re.search(r'\b\d{5}\b', query).group(0)
-            data_type = 'direccion_fisica' # Un CP es parte de una dirección
-            data_confidence = 0.95
-
-        # Si tenemos spaCy, hacer análisis más profundo y refinar data_type/clean_value
-        if self.nlp:
-            try:
-                doc = self.nlp(query)
-
-                # Buscar entidades nombradas y priorizarlas para clean_value y data_type
-                # Solo si clean_value aún no ha sido establecido por una regex de alta confianza
-                if data_confidence < 0.9: # Evita sobrescribir detecciones muy seguras (tarjeta, IFE)
-                    for ent in doc.ents:
-                        if ent.label_ in ['PER', 'PERSON']:
-                            clean_value = ent.text
-                            data_type = 'nombre_persona'
-                            data_confidence = max(data_confidence, 0.9)
-                            break
-                        elif ent.label_ in ['LOC', 'GPE', 'FAC', 'ORG']: # Incluye más tipos de lugar/organización
-                            clean_value = ent.text
-                            data_type = 'direccion_fisica'
-                            data_confidence = max(data_confidence, 0.85)
-                            break
-
-                # Si data_type sigue siendo 'general' o clean_value no es específico, intentar extraer sustantivos importantes
-                if data_type == 'general' or clean_value == query_lower:
-                    important_tokens = [token.text for token in doc
-                                        if token.pos_ in ['NOUN', 'PROPN']
-                                        and len(token.text) > 2
-                                        and not token.is_stop]
-                    if important_tokens:
-                        # Aquí, puedes intentar inferir el tipo de dato basándote en los sustantivos
-                        # Esto es más heurístico y menos preciso, pero puede ayudar
-                        matched_dtype_from_tokens = False
-                        for token in important_tokens:
-                            for dtype, patterns in self.data_type_patterns.items():
-                                if token in patterns: # Si un sustantivo importante es un patrón de tipo de dato
-                                    data_type = dtype
-                                    data_confidence = max(data_confidence, 0.7) # Menor confianza
-                                    matched_dtype_from_tokens = True
-                                    break
-                            if matched_dtype_from_tokens:
-                                break
-                        
-                        if data_type == 'general': # Si aún no se ha asignado un tipo de dato claro
-                             clean_value = ' '.join(important_tokens) # Si no hay un tipo de dato claro, usa los sustantivos como valor
+        for pattern in exclusion_patterns:
+            match = re.search(pattern, query_para_analisis)
+            if match:
+                termino_excluido = match.group(1).strip()
                 
+                if 'general' not in analysis['exclusiones']:
+                    analysis['exclusiones']['general'] = []
+                analysis['exclusiones']['general'].append(termino_excluido)
+                print(f"🕵️‍♂️ Detective encontró una exclusión: '{termino_excluido}'")
+                
+                # Limpiamos la consulta para no confundir al resto del análisis
+                query_para_analisis = query_para_analisis.replace(match.group(0), '').strip()
+        
+        # --- Análisis con spaCy para extraer TODAS las entidades ---
+        if self.nlp:
+            doc = self.nlp(query_para_analisis)
+            
+            # Extraer todas las personas, ubicaciones, etc.
+            for ent in doc.ents:
+                if ent.label_ in ['PER', 'PERSON']:
+                    analysis['nombres'].append(ent.text)
+                elif ent.label_ in ['LOC', 'GPE']:
+                    analysis['ubicaciones'].append(ent.text)
+            
+            # Extraer profesiones de la lista de patrones
+            lista_profesiones = ['ingeniero', 'doctor', 'abogado', 'carpintero', 'medico', 'licenciado']
+            for token in doc:
+                if token.lemma_.lower() in lista_profesiones:
+                    analysis['profesiones'].append(token.lemma_.lower())
 
-            except Exception as e:
-                # print(f"Error con spaCy: {e}") # Descomentar para depuración si es necesario
-                pass  # Si spaCy falla, usar análisis básico
+        # Extraer palabras clave que no son entidades ya reconocidas
+        entidades_encontradas = set(analysis['nombres'] + analysis['ubicaciones'] + analysis['profesiones'])
+        analysis['palabras_clave'] = [
+            word for word in query_para_analisis.split() 
+            if len(word) > 2 and word not in entidades_encontradas
+        ]
         
-        overall_confidence = (intention_confidence + data_confidence) / 2
-        
-        return intention, data_type, clean_value, overall_confidence
+        return analysis
     
     def index_data_from_files(self, data_folder: str):
         """
@@ -621,7 +569,7 @@ class ElasticsearchEngine:
                 'lada', 'Lada', 'area code', 'código de área'
             ],
             'telefono': [
-                'telefono', 'teléfono', 'tel', 'TELEFONO', 'número', 'Telefono'
+                'telefono', 'teléfono', 'tel', 'TELEFONO', 'Telefono'
             ],
             'direccion': [
                 'direccion', 'dirección', 'domicilio', 'calle', 'DIRECCION', 'DIRECCIÓN', 'DOMICILIO',
@@ -862,39 +810,23 @@ class ElasticsearchEngine:
         """
         print(f"🔍 Buscando: '{query}'")
         
-        # Análisis semántico inteligente
-        intention, data_type, clean_value, confidence = self._analyze_query_semantically(query)
+        analysis = self._analyze_query_semantically(query)
         
-        print(f"🧠 Análisis IA: tipo='{data_type}', valor='{clean_value}', confianza={confidence:.2f}")
+        print(f"🧠 Análisis IA: {analysis}")
         
-        # Construir consulta inteligente
-        if confidence > 0.7:
-            # Alta confianza: usar consulta súper inteligente
-            es_query = self._build_intelligent_query(query, intention, data_type, clean_value, confidence)
-            print(f"✨ Usando búsqueda inteligente optimizada")
-        else:
-            # Baja confianza: usar método tradicional mejorado
-            es_query = self._build_elasticsearch_query(query)
-            print(f"🔧 Usando búsqueda tradicional mejorada")
+        es_query = self._build_intelligent_query(analysis)
+        print(f"✨ Usando búsqueda inteligente optimizada")
         
         try:
-            # Ejecutar búsqueda
             response = self.es.search(
                 index=self.index_name,
                 body=es_query,
                 size=max_results
             )
             
-            # Procesar resultados
             results = self._process_search_results(response, query)
             
-            # Agregar información del análisis
-            results['analysis'] = {
-                'intention': intention,
-                'data_type': data_type,
-                'clean_value': clean_value,
-                'confidence': confidence
-            }
+            results['analysis'] = analysis
             
             return results
             
@@ -923,106 +855,62 @@ class ElasticsearchEngine:
         else:
             return self._build_fallback_query(clean_query)
         
-    def _build_intelligent_query(self, query: str, intention: str, data_type: str, clean_value: str, confidence: float) -> Dict:
+    def _build_intelligent_query(self, analysis: Dict) -> Dict:
         """
-        Construye una consulta súper inteligente basada en el análisis semántico
+        Construye una consulta Elasticsearch basada en el análisis complejo,
+        usando lógica booleana estricta (MUST, SHOULD, MUST_NOT).
         """
-        
-        # Configurar boost según confianza y tipo de datos
-        field_boosts = {
-            'tarjeta': {'tarjeta': 10, 'numero_tarjeta': 8, 'card': 6},
-            'telefono': {'telefono_completo': 10, 'telefono': 8, 'celular': 6, 'lada': 4},
-            'nombre_persona': {'nombre_completo': 10, 'nombre': 8, 'nombre_y_apellidos': 7, 'paterno': 5, 'materno': 5},
-            'documento': {'clave_ife': 10, 'identificacion': 8, 'credencial': 6},
-            'direccion_fisica': {'direccion': 10, 'domicilio': 9, 'calle': 8, 'colonia': 7, 'municipio': 6, 'estado': 5, 'cp': 10},
-            'ocupacion_profesion': {'ocupacion': 10, 'profesion': 8, 'trabajo': 7},
-            'edad_genero': {'edad': 10, 'sexo': 8, 'genero': 8},
-            'producto_servicio': {'producto': 10, 'servicio': 8},
-            'cp': {'cp': 10, 'codigo_postal': 9}
-        }
-        
-        # Obtener campos relevantes para este tipo de datos
-        relevant_fields = field_boosts.get(data_type, {})
-        
-        # Construir consultas múltiples con diferentes estrategias
+        must_clauses = []
         should_clauses = []
+        must_not_clauses = []
+
+        # --- Lógica para condiciones OBLIGATORIAS (MUST) ---
+        # Si el detective encontró entidades, las hacemos obligatorias.
+        if analysis.get('nombres'):
+            for nombre in analysis['nombres']:
+                must_clauses.append({"match": {"nombre_completo": {"query": nombre, "fuzziness": "AUTO"}}})
         
-        # Estrategia 1: Búsqueda exacta en campos específicos (alta prioridad)
-        if relevant_fields:
-            for field, boost in relevant_fields.items():
-                should_clauses.extend([
-                    {
-                        "match": {
-                            field: {
-                                "query": clean_value,
-                                "boost": boost * confidence,
-                                "fuzziness": "AUTO"
-                            }
-                        }
-                    },
-                    {
-                        "term": {
-                            f"{field}.keyword": {
-                                "value": clean_value,
-                                "boost": boost * confidence * 1.2
-                            }
-                        }
+        if analysis.get('ubicaciones'):
+            for ubicacion in analysis['ubicaciones']:
+                must_clauses.append({"match": {"estado": {"query": ubicacion}}})
+        
+        if analysis.get('profesiones'):
+            for profesion in analysis['profesiones']:
+                must_clauses.append({"match": {"ocupacion": {"query": profesion}}})
+
+        # --- Lógica para condiciones de EXCLUSIÓN (MUST_NOT) ---
+        if analysis.get('exclusiones', {}).get('general'):
+            for termino in analysis['exclusiones']['general']:
+                must_not_clauses.append({"match": {"nombre_completo": termino}})
+        
+        # --- Lógica para condiciones DESEABLES (SHOULD) ---
+        # Las palabras clave generales suman puntos, pero no son obligatorias.
+        if analysis.get('palabras_clave'):
+            for palabra in analysis['palabras_clave']:
+                should_clauses.append({
+                    "multi_match": {
+                        "query": palabra,
+                        "fields": ["contenido_completo"],
+                        "fuzziness": "AUTO"
                     }
-                ])
+                })
+
+        # Construir el cuerpo final de la consulta
+        # Si no hay cláusulas MUST, al menos una SHOULD debe cumplirse.
+        min_should_match = 1 if not must_clauses and should_clauses else 0
         
-        # Estrategia 2: Búsqueda wildcard para números parciales
-        if clean_value.isdigit() and len(clean_value) >= 4:
-            wildcard_patterns = [
-                f"*{clean_value}*",  # Contiene el número
-                f"{clean_value}*",   # Empieza con el número
-                f"*{clean_value}"    # Termina con el número
-            ]
-            
-            fields_to_search = list(relevant_fields.keys()) if relevant_fields else [
-                'telefono_completo', 'tarjeta', 'numero_tarjeta', 'celular'
-            ]
-            
-            for field in fields_to_search:
-                for pattern in wildcard_patterns:
-                    should_clauses.append({
-                        "wildcard": {
-                            f"{field}.keyword": {
-                                "value": pattern,
-                                "boost": confidence * 3
-                            }
-                        }
-                    })
-        
-        # Estrategia 3: Búsqueda multi-field en todos los campos (backup)
-        should_clauses.append({
-            "multi_match": {
-                "query": clean_value,
-                "fields": ["*"],
-                "type": "best_fields",
-                "fuzziness": "AUTO",
-                "boost": confidence * 0.5
-            }
-        })
-        
-        # Estrategia 4: Búsqueda de la consulta original (por si las anteriores fallan)
-        should_clauses.append({
-            "multi_match": {
-                "query": query,
-                "fields": ["*"],
-                "type": "best_fields",
-                "fuzziness": "AUTO",
-                "boost": 0.3
-            }
-        })
-        
-        return {
+        query_body = {
             "query": {
                 "bool": {
+                    "must": must_clauses,
+                    "must_not": must_not_clauses,
                     "should": should_clauses,
-                    "minimum_should_match": 1
+                    "minimum_should_match": min_should_match
                 }
             }
         }
+        print(f"📜 Estratega construyó un plan: {query_body}")
+        return query_body
     
     def _clean_query(self, query: str) -> str:
         """Limpia y normaliza la consulta"""
